@@ -1,5 +1,9 @@
+'''
+Тестовое изменение
+'''
+
 import sys
-import  traceback
+import traceback
 
 try:
 
