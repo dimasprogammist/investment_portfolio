@@ -1,12 +1,7 @@
-'''
-Тестовое изменение
-'''
-
 import sys
 import traceback
 
 try:
-
     import tkinter as tk
     import numpy as np
     from tkinter import ttk, messagebox
@@ -48,7 +43,6 @@ except Exception:
     input()
     sys.exit(1)
 
-
 class InvestmentApp:
     def __init__(self, root, user_id: int):
         self.root = root
@@ -67,7 +61,6 @@ class InvestmentApp:
         self.create_widgets()
         self.refresh_prices()
         self.start_auto_update()
-        #self.create_deposits_accounts_tab()
 
     def switch_user(self):
         """Смена пользователя: вход под другим логином и перезагрузка данных."""
@@ -89,7 +82,6 @@ class InvestmentApp:
 
     def apply_theme(self, theme):
         """Применяет выбранную тему."""
-        import config
         import json
         import os
 
@@ -105,7 +97,6 @@ class InvestmentApp:
         # Закрываем главное окно
         self.root.destroy()
 
-        # Перезапускаем через subprocess (надежнее, чем os.execl)
         import subprocess
         import sys
         python = sys.executable
@@ -184,7 +175,7 @@ class InvestmentApp:
         self.cashflow_btn = StyledButton(control_frame, "Построить", self.plot_cashflow, width=15)
         self.cashflow_btn.pack(side=tk.LEFT, padx=10)
 
-        # Контейнер для графика
+        # Фрейм для графика
         graph_frame = tk.Frame(bg_frame, bg=COLORS['bg_main'])
         graph_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -207,7 +198,6 @@ class InvestmentApp:
     def plot_cashflow(self):
         """Построение графика денежного потока за выбранный год"""
         from db_config import create_connection
-        from datetime import datetime
 
         year = int(self.cashflow_year.get())
 
@@ -316,15 +306,14 @@ class InvestmentApp:
         self.cashflow_ax.set_facecolor(COLORS['table_odd'])
 
         x = range(len(months))
-        width = 0.2  # Ширина столбца
+        width = 0.2
 
-        # ==================== НАСТРОЙКА ЦВЕТОВ СТОЛБЦОВ ====================
+        # Настройка цветов столбцов
         COLOR_DEPOSITS = COLORS['info']  # Синий для пополнений
         COLOR_DIVIDENDS = '#4caf50'  # Зеленый для дивидендов
         COLOR_COUPONS = '#ff9800'  # Оранжевый для купонов
         COLOR_TOTAL = COLORS['accent']  # Голубой для общего притока
         COLOR_PURCHASES = COLORS['danger']  # Красный для покупок
-        # =================================================================
 
         # Группированные столбцы
         bars1 = self.cashflow_ax.bar([i - width * 1.5 for i in x], deposits_tax, width,
@@ -340,11 +329,10 @@ class InvestmentApp:
         self.cashflow_ax.plot(x, purchases, 'o-', color=COLOR_PURCHASES, linewidth=2,
                               markersize=6, label='Покупки')
 
-        # ==================== ПОДПИСИ НА СТОЛБЦАХ ====================
-        # Рассчитываем отступ для подписей
+        # Подписи суммы на столбцах + Расчет отступов для подписей
         all_values = deposits_tax + dividends + coupons + total_inflow + purchases
         max_val = max(all_values) if all_values else 100000
-        offset = max_val * 0.03  # 3% от максимального значения
+        offset = max_val * 0.03
 
         for i in x:
             # Пополнения + вычеты
@@ -383,9 +371,8 @@ class InvestmentApp:
                                       color=COLOR_PURCHASES, rotation=90, fontweight='bold')
 
             for i in range(len(months) + 1):
-                # Линии между столбцами
+                # Пунктирные линии между месяцами
                 self.cashflow_ax.axvline(x=i - 0.5, color='#bdbdbd', linestyle='--', linewidth=0.5, alpha=0.5)
-        # =============================================================
 
         # Настройка осей
         self.cashflow_ax.set_xticks(x)
@@ -406,6 +393,7 @@ class InvestmentApp:
         total_div = sum(dividends)
         total_coupon = sum(coupons)
 
+        # Панель статистики и суммами за год
         stats_text = (f'Пополнения: {total_dep:,.0f} ₽\n'
                       f'Налоговые вычеты: {total_tax:,.0f} ₽\n'
                       f'Пополнения + вычеты: {total_dep + total_tax:,.0f} ₽\n'
@@ -420,7 +408,7 @@ class InvestmentApp:
                               bbox=dict(boxstyle='round', facecolor=COLORS['accent_light'], alpha=0.8),
                               color=COLORS['text'])
 
-        # Сравнение с прошлым годом
+        # Сравнение размера дивидендов с прошлым годом в %
         if year > 2023:
             conn = create_connection()
             cursor = conn.cursor()
@@ -461,6 +449,7 @@ class InvestmentApp:
         btn_frame = tk.Frame(bg_frame, bg=COLORS['bg_header'])
         btn_frame.pack(fill=tk.X, padx=0, pady=5)
 
+        # Кнопки функций вкладки вкладов
         StyledButton(btn_frame, "➕ Добавить вклад", self.add_deposit_account, width=18).pack(side=tk.LEFT, padx=0)
         StyledButton(btn_frame, "💵 Добавить выплату", self.add_deposit_payment, width=18).pack(side=tk.LEFT, padx=0)
         StyledButton(btn_frame, "✏️ Обновить сумму", self.update_account_amount, width=18).pack(side=tk.LEFT, padx=0)
@@ -491,7 +480,7 @@ class InvestmentApp:
         self.accounts_tree.pack(fill=tk.BOTH, expand=True)
         self.configure_tree_style(self.accounts_tree)
 
-        # Таблица выплат
+        # Таблица выплат по вкладам
         payments_frame = tk.LabelFrame(bg_frame, text="Выплаты процентов", font=("Calibri", 11, "bold"),
                                        bg=COLORS['bg_header'], fg=COLORS['text'], padx=5, pady=0, relief='flat', bd=0)
         payments_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(5, 0))
@@ -514,7 +503,7 @@ class InvestmentApp:
         self.load_deposits_data()
 
     def create_widgets(self):
-        # Верхняя панель
+        # Верхняя с кнопками функций (заголовок)
         self.header_frame = tk.Frame(self.root, bg=COLORS['bg_header'], height=65)
         self.header_frame.pack(fill=tk.X)
         self.header_frame.pack_propagate(False)
@@ -538,6 +527,7 @@ class InvestmentApp:
         btn_row2 = tk.Frame(btn_frame, bg=COLORS['bg_header'])
         btn_row2.pack(anchor='e')
 
+        # Верхний ряд кнопок
         buttons_row1 = [
             ("Пополнение", self.add_deposit),
             ("Покупка акций", lambda: self.add_trade('stock', 'buy')),
@@ -547,6 +537,7 @@ class InvestmentApp:
             ("Графики", self.show_charts),
         ]
 
+        # Нижний ряд кнопок
         buttons_row2 = [
             ("Продажа акций", lambda: self.add_trade('stock', 'sell')),
             ("Погашение облигаций", self.add_redemption),
@@ -580,16 +571,15 @@ class InvestmentApp:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.create_summary_tab()
-        self.create_stocks_tab()
-        self.create_bonds_tab()
-        self.create_dividends_tab()
-        self.create_coupons_tab()
-        self.create_deposits_tab()
+        self.create_summary_tab()   # ← Вкладка "Сводная"
+        self.create_stocks_tab()    # ← Вкладка "Акции"
+        self.create_bonds_tab()     # ← Вкладка "Облигации"
+        self.create_dividends_tab() # ← Вкладка "Дивиденды"
+        self.create_coupons_tab()   # ← Вкладка "Купоны"
+        self.create_deposits_tab()  # ← Вкладка "Пополнения"
         self.create_deposits_accounts_tab()  # ← Вкладка "Вклады"
-        #self.create_tax_deductions_tab()  # ← Вкладка "Вычеты"
-        self.create_history_tab()  # ← Вкладка "История портфеля"
-        self.create_cashflow_tab()
+        self.create_history_tab()   # ← Вкладка "История портфеля"
+        self.create_cashflow_tab()  # ← Вкладка "Денежный поток"
 
         # Статусная строка
         self.status_bar = tk.Frame(self.root, bg=COLORS['bg_header'], height=25)
@@ -620,9 +610,6 @@ class InvestmentApp:
         style.map("Treeview.Heading",
                   background=[('active', COLORS['accent_light'])])
 
-        #for col in tree['columns']:
-        #    tree.column(col, anchor='center')
-
         tree.tag_configure('evenrow', background=COLORS['table_even'])
         tree.tag_configure('oddrow', background=COLORS['table_odd'])
         tree.tag_configure('positive', foreground=COLORS['success'], font=('Calibri', 9, 'bold'))
@@ -631,6 +618,7 @@ class InvestmentApp:
         tree.tag_configure('deviation_negative', foreground=COLORS['danger'])
 
     def create_summary_tab(self):
+        '''Создание вкладки "Сводная"'''
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="Сводная")
 
@@ -714,6 +702,7 @@ class InvestmentApp:
         self.summary_stats_right.pack(side=tk.RIGHT)
 
     def create_stocks_tab(self):
+        '''Создание вкладки "Акции"'''
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="Акции")
 
@@ -768,6 +757,7 @@ class InvestmentApp:
         self.stocks_stats_right.pack(side=tk.RIGHT)
 
     def create_bonds_tab(self):
+        '''Создание вкладки "Облигации"'''
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="Облигации")
 
@@ -835,9 +825,9 @@ class InvestmentApp:
         self.bonds_stats_right.pack(side=tk.RIGHT)
 
     def create_deposits_tab(self):
-        """Вкладка с пополнениями и налоговыми вычетами"""
+        '''Создание вкладки с пополнениями и налоговыми вычетами "Поступления"'''
         frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="💰 Поступления")
+        self.notebook.add(frame, text="Пополнения")
 
         bg_frame = tk.Frame(frame, bg=COLORS['bg_main'])
         bg_frame.pack(fill=tk.BOTH, expand=True)
@@ -846,17 +836,17 @@ class InvestmentApp:
         main_frame = tk.Frame(bg_frame, bg=COLORS['bg_header'])
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # ==================== ЛЕВАЯ ЧАСТЬ: ПОПОЛНЕНИЯ ====================
+        # Левая таблица "Пополнения"
         left_frame = tk.LabelFrame(main_frame, text="Пополнения",
                                    font=("Calibri", 11, "bold"),
                                    bg=COLORS['bg_header'], fg=COLORS['text'],
                                    padx=5, pady=5, relief='flat', bd=0)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
-        # ← ДОБАВЛЯЕМ ПУСТОЙ ФРЕЙМ ДЛЯ ВЫРАВНИВАНИЯ (такой же высоты, как кнопки справа)
+        # Создание пустого фрейма над таблицей "Пополнения" (для выравнивания таблиц)
         spacer_frame = tk.Frame(left_frame, bg=COLORS['bg_header'], height=36)
         spacer_frame.pack(fill=tk.X, pady=(0, 0))
-        spacer_frame.pack_propagate(False)  # ← Фиксируем высоту
+        spacer_frame.pack_propagate(False)
 
         columns = ('date', 'amount')
         self.deposits_tree = ttk.Treeview(left_frame, columns=columns, show='headings', height=10)
@@ -880,7 +870,7 @@ class InvestmentApp:
         separator = tk.Frame(main_frame, bg=COLORS['text_secondary'], width=1)
         separator.pack(side=tk.LEFT, fill=tk.Y, padx=5)
 
-        # ==================== ПРАВАЯ ЧАСТЬ: НАЛОГОВЫЕ ВЫЧЕТЫ ====================
+        # Правая таблица "Налоговые вычеты"
         right_frame = tk.LabelFrame(main_frame, text="Налоговые вычеты",
                                     font=("Calibri", 11, "bold"),
                                     bg=COLORS['bg_header'], fg=COLORS['text'],
@@ -924,6 +914,7 @@ class InvestmentApp:
         self.load_tax_deductions_data()
 
     def create_dividends_tab(self):
+        '''Создание вкладки "Дивиденды"'''
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="Дивиденды")
 
@@ -963,6 +954,7 @@ class InvestmentApp:
         self.configure_tree_style(self.dividends_tree)
 
     def create_coupons_tab(self):
+        '''Создание вкладки "Купоны"'''
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="Купоны")
 
@@ -1001,88 +993,8 @@ class InvestmentApp:
 
         self.configure_tree_style(self.coupons_tree)
 
-    def create_tax_deductions_tab(self):
-        """Вкладка с налоговыми вычетами"""
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="💰 Вычеты")
-
-        bg_frame = tk.Frame(frame, bg=COLORS['bg_main'])
-        bg_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Верхняя панель с кнопками и статистикой
-        top_frame = tk.Frame(bg_frame, bg=COLORS['bg_header'])
-        top_frame.pack(fill=tk.X, padx=20, pady=0)
-
-        # Кнопки
-        btn_frame = tk.Frame(top_frame, bg=COLORS['bg_main'])
-        btn_frame.pack(side=tk.LEFT)
-
-        StyledButton(btn_frame, "➕ Добавить вычет", self.add_tax_deduction, width=18).pack(side=tk.LEFT, padx=0)
-        StyledButton(btn_frame, "🗑️ Удалить", self.delete_tax_deduction, width=18).pack(side=tk.LEFT, padx=0)
-
-        # Статистика
-        stats_frame = tk.Frame(top_frame, bg=COLORS['bg_main'])
-        stats_frame.pack(side=tk.RIGHT)
-
-        self.deductions_total_label = tk.Label(
-            stats_frame, text="Всего вычетов: 0 ₽",
-            font=("Calibri", 11, "bold"),
-            bg=COLORS['bg_header'], fg=COLORS['text']
-        )
-        self.deductions_total_label.pack()
-
-        # Таблица вычетов
-        table_frame = tk.LabelFrame(bg_frame,
-                                    font=("Calibri", 11, "bold"),
-                                    bg=COLORS['bg_header'], fg=COLORS['text'],
-                                    padx=20, pady=0, relief='flat', bd=0)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=(0, 0))
-
-        columns = ('date', 'type', 'year', 'amount', 'description')
-        self.deductions_tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=15)
-
-        self.deductions_tree.heading('date', text='Дата')
-        self.deductions_tree.heading('type', text='Тип вычета')
-        self.deductions_tree.heading('year', text='Год')
-        self.deductions_tree.heading('amount', text='Сумма (₽)')
-        self.deductions_tree.heading('description', text='Описание')
-
-        self.deductions_tree.column('date', width=120, anchor='center')
-        self.deductions_tree.column('type', width=150, anchor='center')
-        self.deductions_tree.column('year', width=80, anchor='center')
-        self.deductions_tree.column('amount', width=130, anchor='center')
-        self.deductions_tree.column('description', width=250, anchor='center')
-
-        # УБРАЛИ СКРОЛЛБАР - просто пакуем таблицу
-        self.deductions_tree.pack(fill=tk.BOTH, expand=True)
-
-        self.configure_tree_style(self.deductions_tree)
-
-        # Статистика по типам и годам
-        stats_bottom_frame = tk.Frame(bg_frame, bg=COLORS['bg_main'])
-        stats_bottom_frame.pack(fill=tk.X, padx=20, pady=(5, 10))
-
-        self.deductions_by_type_label = tk.Label(
-            stats_bottom_frame, text="",
-            font=("Calibri", 9),
-            bg=COLORS['bg_main'], fg=COLORS['text_secondary'],
-            justify=tk.LEFT
-        )
-        self.deductions_by_type_label.pack(side=tk.LEFT)
-
-        self.deductions_by_year_label = tk.Label(
-            stats_bottom_frame, text="",
-            font=("Calibri", 9),
-            bg=COLORS['bg_main'], fg=COLORS['text_secondary'],
-            justify=tk.RIGHT
-        )
-        self.deductions_by_year_label.pack(side=tk.RIGHT)
-
-        # Загружаем данные
-        self.load_tax_deductions_data()
-
     def create_history_tab(self):
-        """Вкладка с историей стоимости портфеля"""
+        '''Создание вкладки с графиком стоимости портфеля "История портфеля"'''
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="📈 История портфеля")
 
@@ -1129,7 +1041,7 @@ class InvestmentApp:
         self.history_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def init_cache(self):
-        """Инициализация кэша исторических цен"""
+        '''Инициализация кэша исторических цен'''
         from history_cache import init_historical_cache
 
         self.status_label.config(text="Инициализация кэша исторических цен...")
@@ -1141,9 +1053,8 @@ class InvestmentApp:
 
         threading.Thread(target=run_init, daemon=True).start()
 
-    # main.py (метод plot_portfolio_history)
     def plot_portfolio_history(self):
-        """Построение графика исторической стоимости портфеля и индекса"""
+        '''Построение графика исторической стоимости портфеля и индекса'''
         from database import get_portfolio_history
         from history_cache import ensure_index_cached, get_prices_from_cache
         from db_config import create_connection
@@ -1169,17 +1080,17 @@ class InvestmentApp:
         self.root.update()
 
         def load_and_plot():
-            # 1. Получаем историю реального портфеля
+            # Получаем историю реального портфеля
             history_df = get_portfolio_history(start_date, end_date)
             if history_df is None or history_df.empty:
                 self.root.after(0, lambda: self._update_history_plot(None, None))
                 return
 
-            # 2. Проверяем и получаем кэш бенчмарка (индекс MCFTR)
+            # Проверяем и получаем кэш бенчмарка (индекс MCFTR)
             ensure_index_cached(INDEX_TICKER, start_date.date(), end_date.date())
             benchmark_df = get_prices_from_cache(INDEX_TICKER, start_date.date(), end_date.date())
 
-            # 3. Получаем пополнения для симуляции
+            # Получаем пополнения для симуляции
             conn = create_connection()
             cursor = conn.cursor()
             cursor.execute("USE investment_portfolio")
@@ -1188,7 +1099,7 @@ class InvestmentApp:
             deposits = cursor.fetchall()
             conn.close()
 
-            # 4. Симулируем портфель, вложенный в бенчмарк
+            # Симулируем портфель, вложенный в бенчмарк
             if benchmark_df is not None and not benchmark_df.empty:
                 benchmark_df['date'] = pd.to_datetime(benchmark_df['date'])
                 benchmark_df = benchmark_df.sort_values('date')
@@ -1201,7 +1112,7 @@ class InvestmentApp:
                 # Получаем первую цену индекса
                 first_valid_idx = merged['close'].first_valid_index()
                 if first_valid_idx is None:
-                    merged['index_value'] = merged['value']  # Fallback
+                    merged['index_value'] = merged['value']
                 else:
                     first_index_price = float(merged.loc[first_valid_idx, 'close'])
 
@@ -1237,7 +1148,7 @@ class InvestmentApp:
                     merged['index_value'] = index_values
             else:
                 merged = history_df.copy()
-                merged['index_value'] = merged['value']  # Если нет данных — копируем портфель
+                merged['index_value'] = merged['value']
 
             self.root.after(0, lambda: self._update_history_plot(history_df, merged))
 
@@ -1274,7 +1185,7 @@ class InvestmentApp:
             self.history_ax.tick_params(colors=COLORS['text'])
             self.history_ax.grid(True, alpha=0.3)
 
-            # ==================== РАСЧЕТ ЧИСТОГО ИНВЕСТИЦИОННОГО ДОХОДА ====================
+            # Расчет чистого инвестиционного дохода
             from db_config import create_connection
 
             conn = create_connection()
@@ -1315,13 +1226,12 @@ class InvestmentApp:
             start_value = history_df['value'].iloc[0]
 
             # Реальная прибыль = изменение стоимости + дивиденды + купоны - внешние поступления
-            # Или проще: финальная стоимость - начальная - внешние поступления
             # НО: дивиденды и купоны уже учтены в value через cash, поэтому:
             # Чистая прибыль = финальная стоимость - начальная стоимость - внешние поступления
             net_profit = final_value - start_value - total_external
 
             # Начальный капитал (то, что реально вложено)
-            initial_investment = start_value + total_external  # Это примерно равно всем вложениям
+            initial_investment = start_value + total_external
 
             # Для первой точки (когда start_value = 0):
             if start_value == 0:
@@ -1333,13 +1243,13 @@ class InvestmentApp:
             # Для индекса
             if index_df is not None and 'index_value' in index_df.columns and not index_df[
                 'index_value'].isnull().all():
-                # Находим первую и последнюю НЕНУЛЕВУЮ стоимость индекса
+                # Находим первую и последнюю не нулевую стоимость индекса
                 index_values = index_df['index_value'].dropna()
-                index_values = index_values[index_values > 0]  # Только положительные
+                index_values = index_values[index_values > 0]
 
                 if len(index_values) > 0:
-                    index_start = index_values.iloc[0]  # Первая доступная цена индекса
-                    index_final = index_values.iloc[-1]  # Последняя доступная цена индекса
+                    index_start = index_values.iloc[0]
+                    index_final = index_values.iloc[-1]
 
                     # Рост индекса в процентах
                     if index_start > 0:
@@ -1357,7 +1267,7 @@ class InvestmentApp:
             info_text = (f'Портфель: {final_value:,.0f} ₽ ({portfolio_growth:+.1f}%) | '
                          f'Индекс: {index_final:,.0f} ₽ ({index_pct:+.1f}%)')
 
-            # Размещаем надпись в ЛЕВОМ ВЕРХНЕМ УГЛУ
+            # Размещаем надпись в левом верхнем углу
             self.history_ax.text(0.02, 0.95, info_text, transform=self.history_ax.transAxes,
                                  bbox=dict(boxstyle="round,pad=0.3", facecolor=COLORS['accent_light'], alpha=0.8),
                                  fontsize=10, color=COLORS['text'])
@@ -1365,11 +1275,11 @@ class InvestmentApp:
         self.history_canvas.draw()
 
     def add_tax_deduction(self):
-        """Добавление налогового вычета"""
+        '''Добавление налогового вычета'''
         AddTaxDeductionDialog(self.root, self.save_tax_deduction)
 
     def save_tax_deduction(self, **kwargs):
-        """Сохранение налогового вычета"""
+        '''Сохранение налогового вычета'''
         from database import save_tax_deduction
         if save_tax_deduction(
                 kwargs['date'],
@@ -1384,7 +1294,7 @@ class InvestmentApp:
             messagebox.showerror("Ошибка", "Не удалось добавить вычет")
 
     def delete_tax_deduction(self):
-        """Удаление вычета"""
+        '''Удаление вычета'''
         selected = self.deductions_tree.selection()
         if not selected:
             messagebox.showwarning("Внимание", "Выберите вычет для удаления")
@@ -1402,7 +1312,7 @@ class InvestmentApp:
                 messagebox.showerror("Ошибка", "Не удалось удалить вычет")
 
     def load_tax_deductions_data(self):
-        """Загрузка данных о налоговых вычетах"""
+        '''Загрузка данных о налоговых вычетах'''
         from database import get_tax_deductions, get_tax_deductions_stats
 
         # Очищаем таблицу
@@ -1432,6 +1342,7 @@ class InvestmentApp:
         self.deductions_total_label.config(text=f"Всего вычетов: {total_deductions:,.2f} ₽")
 
     def load_data(self):
+        '''Загрузка данных из БД для вкладок сводная, акции, облигации'''
         from db_config import create_connection
 
         # Пополнения
@@ -1501,8 +1412,6 @@ class InvestmentApp:
                 amount = float(row[3])
 
                 yield_per_share = amount / qty if qty > 0 else 0
-                # Для купонов пока нет avg_price, поэтому доходность в процентах не считаем
-                # или можно использовать номинал 1000₽
                 nominal = 1000
                 yield_percent = (yield_per_share / nominal * 100) if nominal > 0 else 0
 
@@ -1515,6 +1424,7 @@ class InvestmentApp:
             self.coupons_total_label.config(text=f"Всего купонов: {total_coupons:,.2f} ₽")
 
     def refresh_prices(self):
+        '''Обновление цен'''
         self.status_label.config(text="Обновление цен...")
         self.root.update()
 
@@ -1528,7 +1438,6 @@ class InvestmentApp:
         threading.Thread(target=update, daemon=True).start()
 
     def update_all_tables(self):
-        from db_config import create_connection
         stats = get_portfolio_stats(self.user_id)
         if not stats:
             return
@@ -1556,8 +1465,8 @@ class InvestmentApp:
 
                 all_positions.append(('bond', ticker, pos, current_price_rub, current_value, current_price_percent))
 
-        # Сортировка позиций
         def get_position_order(item):
+            '''Сортировка строк в таблицах в соответствии с конфиг файлом'''
             sec_type = item[0]
             ticker = item[1]
             if sec_type == 'stock':
@@ -1604,7 +1513,7 @@ class InvestmentApp:
 
         # Заполнение таблиц
         for i, item in enumerate(all_positions):
-            if len(item) == 5:  # акция (sec_type, ticker, pos, current_price, current_value)
+            if len(item) == 5:
                 sec_type, ticker, pos, current_price, current_value = item
                 avg_price = pos['total_cost'] / pos['qty'] if pos['qty'] > 0 else 0
                 position_profit = current_value - pos['total_cost']
@@ -1621,7 +1530,7 @@ class InvestmentApp:
                     needed_value = target_value - current_value
                     to_buy = int(needed_value / current_price)
 
-                # ← ВОТ СЮДА ВСТАВЛЯЕМ РАСЧЕТ ДИВИДЕНДОВ
+                # Расчет дивидендов
                 from db_config import create_connection
                 conn = create_connection()
                 cursor = conn.cursor()
@@ -1635,10 +1544,10 @@ class InvestmentApp:
 
                 type_name = "Акция"
 
-                # Данные для таблицы акций (ОБНОВЛЕННЫЙ row_data)
+                # Данные для таблицы акций
                 row_data = [
-                    TICKER_NAMES.get(ticker, ticker),  # название
-                    ticker,  # тикер
+                    TICKER_NAMES.get(ticker, ticker),
+                    ticker,
                     f"{pos['qty']:.0f}",
                     f"{avg_price:.2f}",
                     f"{current_price:.2f}",
@@ -1646,15 +1555,15 @@ class InvestmentApp:
                     f"{current_value:,.2f}",
                     f"{position_profit:,.2f}",
                     f"{profit_pct_pos:.2f}%",
-                    f"{profit_with_div:,.2f}",  # ← НОВОЕ
-                    f"{profit_pct_with_div:.2f}%",  # ← НОВОЕ
+                    f"{profit_with_div:,.2f}",
+                    f"{profit_pct_with_div:.2f}%",
                     f"{share:.2f}%",
                     f"{target_share:.2f}%",
                     f"{deviation:+.2f}%" if deviation != 0 else "0%",
                     str(to_buy) if to_buy > 0 else "-"
                 ]
 
-                # Для сводной таблицы (без изменений, т.к. там нет этих колонок)
+                # Данные для сводной таблицы по акциям
                 summary_values = [
                     TICKER_NAMES.get(ticker, ticker),  # название
                     ticker,  # тикер
@@ -1679,7 +1588,7 @@ class InvestmentApp:
 
 
 
-            else:  # облигация (6 элементов)
+            else:
                 sec_type, ticker, pos, current_price_rub, current_value, current_price_percent = item
                 avg_price_rub = pos['total_cost'] / pos['qty'] if pos['qty'] > 0 else 0
                 avg_price_percent = (avg_price_rub / 1000 * 100) if avg_price_rub > 0 else 0
@@ -1707,7 +1616,7 @@ class InvestmentApp:
                 profit_pct_with_coupon = (profit_with_coupon / pos['total_cost'] * 100) if pos['total_cost'] > 0 else 0
                 type_name = "Облигация"
 
-                # Данные для таблицы облигаций (ОБНОВЛЕННЫЙ row_data)
+                # Данные для таблицы облигаций
                 row_data = [
                     TICKER_NAMES.get(ticker, ticker),
                     ticker,
@@ -1720,15 +1629,15 @@ class InvestmentApp:
                     f"{current_value:,.2f}",
                     f"{position_profit:,.2f}",
                     f"{profit_pct_pos:.2f}%",
-                    f"{profit_with_coupon:,.2f}",  # ← НОВОЕ
-                    f"{profit_pct_with_coupon:.2f}%",  # ← НОВОЕ
+                    f"{profit_with_coupon:,.2f}",
+                    f"{profit_pct_with_coupon:.2f}%",
                     f"{share:.2f}%",
                     f"{target_share:.2f}%",
                     f"{deviation:+.2f}%" if deviation != 0 else "0%",
                     str(to_buy) if to_buy > 0 else "-"
                 ]
 
-                # Для сводной таблицы (без изменений)
+                # Для сводной таблицы по облигациям
                 summary_values = [
                     TICKER_NAMES.get(ticker, ticker),
                     ticker,
@@ -1752,6 +1661,7 @@ class InvestmentApp:
         self.update_bottom_stats(stats, total_portfolio_value, total_purchases, all_positions)
 
     def start_auto_update(self):
+        '''Автоматическое обновление цен раз в минуту'''
         def auto_update():
             while self.update_thread_running and self.auto_update_enabled:
                 time.sleep(60)
@@ -1761,6 +1671,7 @@ class InvestmentApp:
         threading.Thread(target=auto_update, daemon=True).start()
 
     def toggle_auto_update(self):
+        '''Выключение автоматического обновления'''
         self.auto_update_enabled = not self.auto_update_enabled
         status = "включено" if self.auto_update_enabled else "выключено"
         self.status_label.config(text=f"Автообновление {status}")
@@ -1825,6 +1736,7 @@ class InvestmentApp:
             messagebox.showerror("Ошибка", "Не удалось добавить вычет")
 
     def show_charts(self):
+        '''Всплывающее окно с круговой диаграммой'''
         stats = get_portfolio_stats(self.user_id)
 
         chart_window = tk.Toplevel(self.root)
@@ -1975,7 +1887,7 @@ class InvestmentApp:
 
             conn.close()
 
-            # Объединяем все "внешние" поступления
+            # Объединяем все внешние поступления
             external_income = {}
             for d in deposits:
                 date_obj = d[0]
@@ -2047,7 +1959,7 @@ class InvestmentApp:
         self.root.destroy()
 
     def load_deposits_data(self):
-        """Загрузка данных о вкладах и выплатах"""
+        '''Загрузка данных о вкладах и выплатах'''
         from database import get_deposit_accounts, get_deposit_payments
 
         # Очищаем таблицы
@@ -2058,7 +1970,7 @@ class InvestmentApp:
 
         # Загружаем счета
         accounts = get_deposit_accounts()
-        self.accounts_list = accounts  # Сохраняем для использования в диалогах
+        self.accounts_list = accounts
 
         total_in_deposits = 0
         for i, acc in enumerate(accounts):
@@ -2083,11 +1995,11 @@ class InvestmentApp:
                                       tags=(tag,))
 
     def add_deposit_account(self):
-        """Добавление нового вклада"""
+        '''Добавление нового вклада'''
         AddDepositAccountDialog(self.root, self.save_deposit_account)
 
     def save_deposit_account(self, **kwargs):
-        """Сохранение нового вклада"""
+        '''Сохранение нового вклада'''
         from database import save_deposit_account
         if save_deposit_account(kwargs['name'], kwargs['acc_type'], kwargs['amount'],
                                 kwargs.get('rate'), kwargs.get('maturity'), kwargs.get('notes')):
@@ -2097,14 +2009,14 @@ class InvestmentApp:
             messagebox.showerror("Ошибка", "Не удалось добавить вклад")
 
     def add_deposit_payment(self):
-        """Добавление выплаты по вкладу"""
+        '''Добавление выплаты по вкладу'''
         if not hasattr(self, 'accounts_list') or not self.accounts_list:
             messagebox.showwarning("Внимание", "Сначала добавьте хотя бы один вклад")
             return
         AddDepositPaymentDialog(self.root, self.accounts_list, self.save_deposit_payment)
 
     def save_deposit_payment(self, **kwargs):
-        """Сохранение выплаты"""
+        '''Сохранение выплаты'''
         from database import save_deposit_payment
         if save_deposit_payment(kwargs['account_id'], kwargs['date'], kwargs['amount']):
             messagebox.showinfo("Успех", "Выплата добавлена")
@@ -2113,12 +2025,11 @@ class InvestmentApp:
             messagebox.showerror("Ошибка", "Не удалось добавить выплату")
 
     def update_account_amount(self):
-        """Обновление суммы на счете"""
-        # Здесь можно добавить диалог для обновления
+        '''Обновление суммы на счете'''
         messagebox.showinfo("В разработке", "Функция в разработке")
 
     def delete_account(self):
-        """Удаление вклада"""
+        '''Удаление вклада'''
         selected = self.accounts_tree.selection()
         if not selected:
             messagebox.showwarning("Внимание", "Выберите вклад для удаления")
@@ -2146,7 +2057,6 @@ if __name__ == "__main__":
     root = tk.Tk()
 
     if init_db():
-        # Вход перед запуском основного окна.
         login = LoginDialog(root)
         user_id = login.show()
         if user_id is None:

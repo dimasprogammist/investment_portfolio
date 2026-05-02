@@ -7,11 +7,9 @@ from db_config import create_connection
 
 
 def _hash_password_pbkdf2(password: str, iterations: int = 260_000) -> str:
-    """
-    PBKDF2-HMAC-SHA256.
+    """ PBKDF2-HMAC-SHA256.
+        Формат хранения: pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>"""
 
-    Формат хранения: pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>
-    """
     salt = secrets.token_bytes(16)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     salt_b64 = base64.b64encode(salt).decode("ascii")
