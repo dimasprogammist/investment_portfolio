@@ -1,7 +1,7 @@
 # history_cache.py - работа с кэшем исторических цен
-from db_config import create_connection
+from DB.db_config import create_connection
 from history import get_historical_prices
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 import requests
 from config import STOCKS, BONDS
@@ -227,7 +227,7 @@ def init_historical_cache(start_date=None):
 
 def get_portfolio_history_cached(start_date, end_date, user_id: int = 1):
     """Рассчитывает историю портфеля пользователя, используя кэшированные цены."""
-    from db_config import create_connection
+    from DB.db_config import create_connection
     import pandas as pd
     from datetime import datetime
     from prices import get_usd_rate

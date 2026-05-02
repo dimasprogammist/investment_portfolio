@@ -1036,6 +1036,59 @@ class AddDepositPaymentDialog(StyledDialog):
             messagebox.showerror("Ошибка", "Введите корректные данные")
 
 
+class UpdateAccountDialog(StyledDialog):
+    def __init__(self, parent, accounts, callback):
+        super().__init__(parent, "Обновить сумму", 300, 200)
+        self.accounts = accounts
+        self.accounts_dict = {f"{acc[1]} ({acc[2]})": acc for acc in accounts}
+        self.callback = callback
+        self.create_widgets()
+
+    def create_widgets(self):
+        frame_account = tk.Frame(self.main_frame, bg=COLORS["bg_main"])
+        frame_account.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(frame_account, text="Счет:", width=15, anchor="w", font=("Calibri", 10),
+                 bg=COLORS["bg_main"], fg=COLORS["text"]).pack(side=tk.LEFT)
+        self.account_combo = ttk.Combobox(frame_account, values=list(self.accounts_dict.keys()),
+                                          font=("Calibri", 10), state="readonly", width=30)
+        self.account_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+        self.account_combo.bind('<<ComboboxSelected>>', self.on_account_select)
+
+        frame_amount = tk.Frame(self.main_frame, bg=COLORS["bg_main"])
+        frame_amount.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(frame_amount, text="Новая сумма (₽):", width=15, anchor="w", font=("Calibri", 10),
+                 bg=COLORS["bg_main"], fg=COLORS["text"]).pack(side=tk.LEFT)
+        self.amount_entry = tk.Entry(frame_amount, font=("Calibri", 10), bg="white",
+                                     fg=COLORS["text"], relief="solid", bd=0, highlightthickness=1)
+        self.amount_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+
+        btn_frame = tk.Frame(self.main_frame, bg=COLORS["bg_main"])
+        btn_frame.pack(pady=(5, 0))
+        tk.Button(btn_frame, text="Обновить", command=self.save,
+                  bg=COLORS["success"], fg="white", font=("Calibri", 9),
+                  relief="flat", padx=15, pady=5, cursor="hand2").pack(side="left", padx=(0, 10))
+        tk.Button(btn_frame, text="Отмена", command=self.dialog.destroy,
+                  bg=COLORS["danger"], fg="white", font=("Calibri", 9),
+                  relief="flat", padx=15, pady=5, cursor="hand2").pack(side="left")
+
+    def on_account_select(self, event):
+        account_key = self.account_combo.get()
+        if account_key in self.accounts_dict:
+            acc = self.accounts_dict[account_key]
+            self.amount_entry.delete(0, tk.END)
+            self.amount_entry.insert(0, f"{float(acc[3]):.2f}")
+
+    def save(self):
+        try:
+            account_key = self.account_combo.get()
+            acc = self.accounts_dict[account_key]
+            new_amount = float(self.amount_entry.get())
+            self.callback(account_id=acc[0], new_amount=new_amount)
+            self.dialog.destroy()
+        except ValueError:
+            from tkinter import messagebox
+            messagebox.showerror("Ошибка", "Введите корректную сумму")
+
 class AddTaxDeductionDialog(StyledDialog):
     def __init__(self, parent, callback):
         super().__init__(parent, "Налоговый вычет", 280, 245)

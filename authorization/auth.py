@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import secrets
 
-from db_config import create_connection
+from DB.db_config import create_connection
 
 
 def _hash_password_pbkdf2(password: str, iterations: int = 260_000) -> str:

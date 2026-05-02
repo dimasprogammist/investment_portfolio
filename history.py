@@ -22,7 +22,7 @@ def get_historical_prices(ticker, start_date, end_date, security_type='stock', i
         params = {
             'interval': interval,
             'from': current_start.strftime('%Y-%m-%d'),
-            'till': end_date.strftime('%Y-%m-%d')  # ← ВСЕГДА до конца!
+            'till': end_date.strftime('%Y-%m-%d')
         }
 
         try:
@@ -45,7 +45,7 @@ def get_historical_prices(ticker, start_date, end_date, security_type='stock', i
             if len(candles) < 500:
                 break
 
-            # Берём дату ПОСЛЕДНЕЙ свечи + 1 день как новый старт
+            # Берём дату последней свечи + 1 день как новый старт
             begin_idx = columns.index('begin') if 'begin' in columns else 0
             last_date_str = candles[-1][begin_idx]
             if ' ' in str(last_date_str):
@@ -115,9 +115,7 @@ def get_price_on_date(ticker, date, security_type='stock'):
     return None
 
 
-# ==================== КЭШИРОВАНИЕ ДАННЫХ ====================
-# Чтобы не грузить MOEX при каждом построении графика
-
+# Кеширование данных, чтобы не грузить MOEX при каждом построении графика
 _cache = {}
 
 
