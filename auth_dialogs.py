@@ -7,7 +7,6 @@ from config import COLORS
 
 class SettingsDialog:
     """Окно настроек приложения."""
-
     def __init__(self, parent, current_theme_callback, switch_user_callback):
         self.parent = parent
         self.current_theme_callback = current_theme_callback
@@ -121,7 +120,6 @@ class SettingsDialog:
 
 class LoginDialog:
     """Диалог входа/выбора пользователя. Возвращает user_id при успехе."""
-
     def __init__(self, parent):
         self.parent = parent
         self.user_id: int | None = None

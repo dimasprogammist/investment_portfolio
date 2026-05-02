@@ -123,35 +123,3 @@ def get_all_prices(stocks, bonds):
         if price:
             prices[ticker] = round(price, 2)
     return prices
-
-'''
-def get_current_price(ticker, security_type='stock'):
-    """Получение текущей цены с MOEX"""
-    if security_type == 'stock':
-        url = f"https://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker}.json"
-    else:
-        url = f"https://iss.moex.com/iss/engines/stock/markets/bonds/securities/{ticker}.json"
-
-    try:
-        response = requests.get(url, timeout=10)
-        data = response.json()
-
-        if 'marketdata' in data and 'data' in data['marketdata']:
-            # ВРЕМЕННАЯ ОТЛАДКА ДЛЯ ПЕРВОГО ТИКЕРА
-            if ticker == 'SBER':
-                print(f"\nОтладка {ticker}:")
-                print(f"Колонки marketdata: {data['marketdata']['columns']}")
-                for row in data['marketdata']['data']:
-                    print(f"  Данные: {row}")
-
-            for row in data['marketdata']['data']:
-                # Пробуем разные индексы
-                if len(row) > 4 and row[4] is not None:  # CURRENTVALUE
-                    return float(row[4])
-                elif len(row) > 2 and row[2] is not None:  # LASTVALUE
-                    return float(row[2])
-                elif len(row) > 3 and row[3] is not None:  # OPENVALUE
-                    return float(row[3])
-    except Exception as e:
-        print(f"Ошибка получения цены для {ticker}: {e}")
-    return None'''

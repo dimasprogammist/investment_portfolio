@@ -10,14 +10,13 @@ from mysql.connector import Error
 
 def _load_dotenv_if_present(path: str | None = None) -> None:
     """
-    Минимальная поддержка файла `.env` без внешних зависимостей.
+    Загрузка файла .env
 
     - Загружает строки вида KEY=VALUE
-    - Игнорирует пустые строки и комментарии (# ...)
     - Не переопределяет уже заданные переменные окружения
     """
     try:
-        # По умолчанию ищем `.env` рядом с исходниками проекта, а не в cwd.
+        # По умолчанию ищем .env рядом с исходниками проекта, а не в cwd.
         # Это важно при запуске из IDE/планировщика/собранного exe.
         if path is None:
             env_path = os.getenv("MOEX_ENV_PATH")
@@ -46,7 +45,6 @@ def _load_dotenv_if_present(path: str | None = None) -> None:
                     continue
                 os.environ.setdefault(key, value)
     except OSError:
-        # `.env` — вспомогательный файл; если его не удалось прочитать, просто пропускаем.
         return
 
 
@@ -55,7 +53,7 @@ def _load_db_config() -> dict:
     Возвращает параметры подключения к MySQL из переменных окружения.
 
     Важно: пароль не должен храниться в исходниках. Задайте его через переменную
-    `MOEX_DB_PASSWORD` (или `MYSQL_PWD`, если у вас уже так настроено).
+    `MOEX_DB_PASSWORD` (или `MYSQL_PWD`).
     """
     port_raw = os.getenv("MOEX_DB_PORT", "3306")
     try:
@@ -90,10 +88,6 @@ def create_connection():
 def init_db():
     """
     Создаёт/обновляет схему БД.
-
-    Особенность проекта: приложение локальное, но с поддержкой нескольких пользователей.
-    Для этого вводим таблицу `users` и добавляем `user_id` во все пользовательские таблицы,
-    чтобы данные разных людей не смешивались.
     """
     conn = create_connection()
     if not conn:
@@ -106,7 +100,7 @@ def init_db():
     cursor.execute("CREATE DATABASE IF NOT EXISTS investment_portfolio")
     cursor.execute("USE investment_portfolio")
 
-    # ==================== ПОЛЬЗОВАТЕЛИ ====================
+    # Пользователи
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -121,7 +115,6 @@ def init_db():
     def _hash_password_pbkdf2(password: str, iterations: int = 260_000) -> str:
         """
         PBKDF2-HMAC-SHA256.
-
         Формат хранения: pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>
         """
         salt = secrets.token_bytes(16)
@@ -130,7 +123,7 @@ def init_db():
         hash_b64 = base64.b64encode(dk).decode("ascii")
         return f"pbkdf2_sha256${iterations}${salt_b64}${hash_b64}"
 
-    # Создаём первого пользователя по умолчанию, чтобы существующие данные можно было "подхватить".
+    # Создаём первого пользователя по умолчанию
     cursor.execute("SELECT id FROM users WHERE username = %s LIMIT 1", ("admin",))
     if cursor.fetchone() is None:
         admin_password = os.getenv("MOEX_ADMIN_PASSWORD", "admin")
@@ -306,7 +299,7 @@ def init_db():
         )
     ''')
 
-    # ==================== МИГРАЦИИ: ДОБАВЛЕНИЕ user_id В СТАРЫЕ ТАБЛИЦЫ ====================
+    # Добавление user_id в старые таблицы
     # Если таблицы были созданы ранее (без user_id), добавляем колонку.
     user_tables = [
         ("deposits",),
@@ -326,7 +319,6 @@ def init_db():
         if not cursor.fetchone():
             cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN user_id INT NOT NULL DEFAULT 1")
 
-    # Проставляем FK (если ещё нет). В MySQL удобно проверять через information_schema.
     cursor.execute(
         """
         SELECT CONSTRAINT_NAME
