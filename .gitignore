@@ -12,3 +12,5 @@ dist/
 fair_prices.json
 last_benchmark_update.txt
 DB/last_asset_update.txt
+logs/
+backups/

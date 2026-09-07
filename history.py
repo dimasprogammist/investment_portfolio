@@ -1,7 +1,12 @@
-import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from collections import defaultdict
+
+try:
+    from services.moex_client import SESSION
+except Exception:
+    import requests
+    SESSION = requests.Session()
 
 
 def get_historical_prices(ticker, start_date, end_date, security_type='stock', interval=24):
@@ -19,14 +24,16 @@ def get_historical_prices(ticker, start_date, end_date, security_type='stock', i
     columns = None
 
     while current_start < end_date:
+        from_str = current_start.strftime('%Y-%m-%d') if hasattr(current_start, 'strftime') else str(current_start)
+        till_str = end_date.strftime('%Y-%m-%d') if hasattr(end_date, 'strftime') else str(end_date)
         params = {
             'interval': interval,
-            'from': current_start.strftime('%Y-%m-%d'),
-            'till': end_date.strftime('%Y-%m-%d')
+            'from': from_str,
+            'till': till_str
         }
 
         try:
-            response = requests.get(base_url, params=params, timeout=30)
+            response = SESSION.get(base_url, params=params, timeout=30)
             data = response.json()
 
             if 'candles' not in data or 'data' not in data['candles']:

@@ -3,10 +3,13 @@ import base64
 import hashlib
 import secrets
 import sys
-import datetime
+from datetime import datetime
 
 import mysql.connector
 from mysql.connector import Error
+from mysql.connector import pooling
+
+_pool = None
 
 
 def _load_dotenv_if_present(path: str | None = None) -> None:
@@ -17,13 +20,17 @@ def _load_dotenv_if_present(path: str | None = None) -> None:
             if env_path:
                 path = env_path
             else:
+                candidates = []
                 if getattr(sys, "frozen", False):
-                    base_dir = os.path.dirname(sys.executable)
+                    candidates.append(os.path.join(os.path.dirname(sys.executable), ".env"))
                 else:
-                    base_dir = os.path.dirname(os.path.abspath(__file__))
-                path = os.path.join(base_dir, ".env")
+                    here = os.path.dirname(os.path.abspath(__file__))
+                    project_root = os.path.dirname(here)
+                    candidates.append(os.path.join(project_root, ".env"))
+                    candidates.append(os.path.join(here, ".env"))
+                path = next((p for p in candidates if os.path.exists(p)), candidates[0] if candidates else "")
 
-        if not os.path.exists(path):
+        if not path or not os.path.exists(path):
             return
         with open(path, "r", encoding="utf-8") as f:
             for raw_line in f:
@@ -62,12 +69,19 @@ def _load_db_config() -> dict:
 
 
 def create_connection():
-    """Создаёт соединение с базой данных MySQL."""
+    """Создаёт соединение с базой данных MySQL (пул)."""
+    global _pool
     try:
         _load_dotenv_if_present()
         db_config = _load_db_config()
-        conn = mysql.connector.connect(**db_config)
-        return conn
+        if _pool is None:
+            _pool = pooling.MySQLConnectionPool(
+                pool_name="moex_pool",
+                pool_size=8,
+                pool_reset_session=True,
+                **db_config,
+            )
+        return _pool.get_connection()
     except Error as e:
         print(f"Ошибка подключения к MySQL: {e}")
         return None
@@ -121,6 +135,12 @@ def init_db():
     cursor.close()
     conn.close()
     print("База данных успешно инициализирована")
+
+    try:
+        from DB.database import seed_user_target_shares
+        seed_user_target_shares(1)
+    except Exception as e:
+        print(f"Не удалось заполнить целевые доли: {e}")
 
     # 4. Обновляем список доступных активов (раз в неделю)
     import os
@@ -208,6 +228,27 @@ def _apply_migrations(cursor):
                     pass
     except Error:
         pass
+
+    for ddl in (
+        """CREATE TABLE IF NOT EXISTS price_cache (
+            ticker VARCHAR(20) PRIMARY KEY,
+            security_type VARCHAR(10) NOT NULL,
+            price_rub DECIMAL(16,4) NOT NULL,
+            price_pct DECIMAL(12,4) DEFAULT NULL,
+            nkd DECIMAL(12,4) DEFAULT 0,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )""",
+        """CREATE TABLE IF NOT EXISTS user_target_shares (
+            user_id INT NOT NULL,
+            ticker VARCHAR(20) NOT NULL,
+            target_pct DECIMAL(8,4) NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, ticker)
+        )""",
+    ):
+        try:
+            cursor.execute(ddl)
+        except Error:
+            pass
 
 
 if __name__ == "__main__":

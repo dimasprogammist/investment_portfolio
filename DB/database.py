@@ -101,6 +101,24 @@ def get_portfolio_stats(user_id: int = 1) -> dict[str, Any]:
     }
 
 
+def get_income_sums_by_ticker(table: str, user_id: int = 1) -> dict[str, float]:
+    """Суммы дивидендов или купонов по тикерам одного пользователя."""
+    if table not in ("dividends", "coupons"):
+        raise ValueError(table)
+    conn = create_connection()
+    if not conn:
+        return {}
+    cursor = conn.cursor()
+    cursor.execute("USE investment_portfolio")
+    cursor.execute(
+        f"SELECT ticker, COALESCE(SUM(amount), 0) FROM {table} WHERE user_id = %s GROUP BY ticker",
+        (user_id,),
+    )
+    result = {row[0]: float(row[1] or 0) for row in cursor.fetchall()}
+    conn.close()
+    return result
+
+
 def save_deposit(date, amount, user_id: int = 1):
     """Сохранение пополнения пользователя."""
     conn = create_connection()
@@ -441,3 +459,51 @@ def get_tax_deductions_stats(user_id: int = 1):
         'by_type': by_type,
         'by_year': by_year
     }
+
+
+def get_user_target_shares(user_id: int = 1) -> dict[str, float]:
+    """Целевые доли пользователя. Если в БД пусто — из config.TARGET_SHARES."""
+    from config import TARGET_SHARES
+
+    conn = create_connection()
+    if not conn:
+        return dict(TARGET_SHARES)
+    cursor = conn.cursor()
+    cursor.execute("USE investment_portfolio")
+    try:
+        cursor.execute(
+            "SELECT ticker, target_pct FROM user_target_shares WHERE user_id = %s",
+            (user_id,),
+        )
+        rows = cursor.fetchall()
+    except Exception:
+        conn.close()
+        return dict(TARGET_SHARES)
+    conn.close()
+    if not rows:
+        seed_user_target_shares(user_id)
+        return dict(TARGET_SHARES)
+    return {ticker: float(pct or 0) for ticker, pct in rows}
+
+
+def seed_user_target_shares(user_id: int = 1) -> None:
+    from config import TARGET_SHARES
+
+    conn = create_connection()
+    if not conn:
+        return
+    cursor = conn.cursor()
+    cursor.execute("USE investment_portfolio")
+    for ticker, pct in TARGET_SHARES.items():
+        try:
+            cursor.execute(
+                """
+                INSERT IGNORE INTO user_target_shares (user_id, ticker, target_pct)
+                VALUES (%s, %s, %s)
+                """,
+                (user_id, ticker, pct),
+            )
+        except Exception:
+            break
+    conn.commit()
+    conn.close()

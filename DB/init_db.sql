@@ -253,6 +253,25 @@ ADD COLUMN msfo_history TEXT;
 ALTER TABLE investment_portfolio.stock_fundamentals
 ADD COLUMN dividend_yield DECIMAL(10,2);
 
+-- Кэш последних котировок
+CREATE TABLE IF NOT EXISTS price_cache (
+    ticker VARCHAR(20) PRIMARY KEY,
+    security_type VARCHAR(10) NOT NULL,
+    price_rub DECIMAL(16,4) NOT NULL,
+    price_pct DECIMAL(12,4) DEFAULT NULL,
+    nkd DECIMAL(12,4) DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Целевые доли портфеля по пользователю
+CREATE TABLE IF NOT EXISTS user_target_shares (
+    user_id INT NOT NULL,
+    ticker VARCHAR(20) NOT NULL,
+    target_pct DECIMAL(8,4) NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, ticker),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- Данные по инфляции (ИПЦ, % год к году)
 INSERT IGNORE INTO benchmark_inflation (date, value) VALUES
 ('2023-06-30', 2.5),

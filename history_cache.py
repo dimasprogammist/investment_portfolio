@@ -1,10 +1,15 @@
 # history_cache.py - работа с кэшем исторических цен
 from DB.db_config import create_connection
 from history import get_historical_prices
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
-import requests
 from config import STOCKS, BONDS
+
+try:
+    from services.moex_client import SESSION
+except Exception:
+    import requests
+    SESSION = requests.Session()
 
 # Попробуем импортировать CURRENCY_BONDS_CONFIG
 try:
@@ -17,7 +22,7 @@ INDEX_TICKER = 'MCFTR'
 
 
 def save_prices_to_cache(ticker, security_type, prices_df):
-    """Сохраняет исторические цены в кэш БД"""
+    """Сохраняет исторические цены в кэш БД пакетом."""
     if prices_df is None or prices_df.empty:
         return 0
 
@@ -27,20 +32,23 @@ def save_prices_to_cache(ticker, security_type, prices_df):
 
     cursor = conn.cursor()
     cursor.execute("USE investment_portfolio")
-
-    saved = 0
+    rows = []
     for _, row in prices_df.iterrows():
         try:
-            cursor.execute("""
-                INSERT INTO historical_prices (date, ticker, price, security_type)
-                VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE price = VALUES(price)
-            """, (row['date'], ticker, float(row['close']), security_type))
-            saved += 1
-        except Exception as e:
-            print(f"Ошибка сохранения {ticker} на {row['date']}: {e}")
-
-    conn.commit()
+            rows.append((row['date'], ticker, float(row['close']), security_type))
+        except (TypeError, ValueError):
+            continue
+    if rows:
+        cursor.executemany(
+            """
+            INSERT INTO historical_prices (date, ticker, price, security_type)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE price = VALUES(price)
+            """,
+            rows,
+        )
+        conn.commit()
+    saved = len(rows)
     conn.close()
     print(f"Сохранено {saved} записей для {ticker}")
     return saved
@@ -74,42 +82,41 @@ def get_prices_from_cache(ticker, start_date, end_date):
 
 
 def ensure_prices_cached(ticker, security_type, start_date, end_date, force_refresh=False):
-    """Проверяет наличие АКТУАЛЬНЫХ данных в кэше, загружает недостающие"""
+    """Докачивает только недостающий хвост истории, а не весь период заново."""
     conn = create_connection()
     if not conn:
         return
 
+    if isinstance(start_date, datetime):
+        start_date = start_date.date()
+    if isinstance(end_date, datetime):
+        end_date = end_date.date()
+
     cursor = conn.cursor()
     cursor.execute("USE investment_portfolio")
-
-    # Проверяем максимальную дату в кэше для этого тикера
-    cursor.execute("""
-        SELECT MAX(date), COUNT(*) FROM historical_prices 
-        WHERE ticker = %s AND date BETWEEN %s AND %s
-    """, (ticker, start_date, end_date))
-
+    cursor.execute(
+        "SELECT MAX(date), COUNT(*) FROM historical_prices WHERE ticker = %s AND date BETWEEN %s AND %s",
+        (ticker, start_date, end_date),
+    )
     last_date, count = cursor.fetchone()
     conn.close()
 
-    # Если force_refresh, данных нет вообще, или последняя дата старше чем нужно
-    need_refresh = force_refresh or count == 0
-
-    if last_date:
-        # Если последняя дата в кэше отстаёт больше чем на 3 дня от end_date
-        days_behind = (end_date - last_date).days if end_date else 365
-        if days_behind > 3:
-            need_refresh = True
-            print(f"{ticker}: данные отстают на {days_behind} дней, обновляем")
+    fetch_start = start_date
+    if last_date and not force_refresh:
+        days_behind = (end_date - last_date).days
+        if days_behind <= 1 and count:
+            print(f"{ticker}: кэш актуален ({last_date})")
+            return
+        fetch_start = last_date - timedelta(days=5)
+        if fetch_start < start_date:
+            fetch_start = start_date
+        print(f"{ticker}: докачка с {fetch_start} (последняя дата {last_date})")
     else:
-        need_refresh = True
+        print(f"Загрузка {ticker} с {fetch_start} по {end_date}...")
 
-    if need_refresh:
-        print(f"Загрузка {ticker} с {start_date} по {end_date}...")
-        prices = get_historical_prices(ticker, start_date, end_date, security_type)
-        if prices is not None and not prices.empty:
-            save_prices_to_cache(ticker, security_type, prices)
-    else:
-        print(f"{ticker}: данные актуальны (последняя дата: {last_date})")
+    prices = get_historical_prices(ticker, fetch_start, end_date, security_type)
+    if prices is not None and not prices.empty:
+        save_prices_to_cache(ticker, security_type, prices)
 
 
 def fetch_index_history(ticker, start_date, end_date):
@@ -136,7 +143,7 @@ def fetch_index_history(ticker, start_date, end_date):
         }
 
         try:
-            response = requests.get(url, params=params, timeout=30)
+            response = SESSION.get(url, params=params, timeout=30)
             data = response.json()
 
             if 'history' not in data or not data['history']['data']:
@@ -184,15 +191,24 @@ def ensure_index_cached(ticker, start_date, end_date, force_refresh=False):
     cursor.execute("USE investment_portfolio")
 
     cursor.execute("""
-        SELECT COUNT(*) FROM historical_prices 
+        SELECT MAX(date), COUNT(*) FROM historical_prices 
         WHERE ticker = %s AND date BETWEEN %s AND %s
     """, (ticker, start_date, end_date))
-    count = cursor.fetchone()[0]
+    last_date, count = cursor.fetchone()
     conn.close()
 
-    if force_refresh or count == 0:
-        print(f"Загрузка индекса {ticker} с {start_date} по {end_date}...")
-        prices = fetch_index_history(ticker, start_date, end_date)
+    fetch_start = start_date
+    if last_date and not force_refresh:
+        if (end_date - last_date).days <= 1 and count:
+            print(f"{ticker}: кэш индекса актуален ({last_date})")
+            return
+        fetch_start = last_date - timedelta(days=5)
+        if fetch_start < start_date:
+            fetch_start = start_date
+
+    if force_refresh or count == 0 or fetch_start < end_date:
+        print(f"Загрузка индекса {ticker} с {fetch_start} по {end_date}...")
+        prices = fetch_index_history(ticker, fetch_start, end_date)
         if prices is not None and not prices.empty:
             save_prices_to_cache(ticker, 'index', prices)
 
@@ -216,11 +232,11 @@ def init_historical_cache(start_date=None):
     for i, ticker in enumerate(all_tickers, 1):
         if ticker == INDEX_TICKER:
             print(f"[{i}/{total}] Обработка индекса {ticker}...")
-            ensure_index_cached(ticker, start_date, end_date, force_refresh=True)
+            ensure_index_cached(ticker, start_date, end_date, force_refresh=False)
         else:
             security_type = 'stock' if ticker in STOCKS else 'bond'
             print(f"[{i}/{total}] Обработка {ticker} ({security_type})...")
-            ensure_prices_cached(ticker, security_type, start_date, end_date, force_refresh=True)
+            ensure_prices_cached(ticker, security_type, start_date, end_date, force_refresh=False)
 
     print("Инициализация кэша завершена!")
 

@@ -115,17 +115,28 @@ def get_current_price_rub(ticker, security_type='stock'):
 
 
 def get_all_prices(stocks, bonds):
-    """Получение всех текущих цен (в рублях)"""
-    prices = {}
-    for ticker in stocks:
-        price = get_current_price_rub(ticker, 'stock')
-        if price:
-            prices[ticker] = round(price, 2)
-    for ticker in bonds:
-        price = get_current_price_rub(ticker, 'bond')
-        if price:
-            prices[ticker] = round(price, 2)
-    return prices
+    """Пакетная загрузка цен ISS. При сбое — кэш из БД."""
+    from services.moex_client import fetch_quotes, save_price_cache, load_price_cache, LAST_QUOTES
+
+    tickers = list(stocks) + list(bonds)
+    quotes = {}
+    try:
+        quotes = fetch_quotes(list(stocks), list(bonds))
+        if quotes:
+            try:
+                save_price_cache(quotes)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"Ошибка пакетной загрузки цен: {e}")
+
+    missing = [t for t in tickers if t not in quotes]
+    if missing:
+        cached = load_price_cache(missing)
+        quotes.update(cached)
+        LAST_QUOTES.update(cached)
+
+    return {ticker: round(float(q["price_rub"]), 2) for ticker, q in quotes.items() if q.get("price_rub")}
 
 
 def fetch_all_assets_from_moex():

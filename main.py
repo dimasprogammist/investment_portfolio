@@ -20,6 +20,10 @@ try:
     from prices import get_all_prices
     from authorization.auth_dialogs import LoginDialog, SettingsDialog
     from benchmarks import update_benchmarks_in_db, get_inflation_yoy, inflation_adjusted_deposits
+    from services.app_log import setup_logging, get_logger
+
+    setup_logging()
+    log = get_logger()
 
     import pandas as pd
     from datetime import timedelta
@@ -84,7 +88,7 @@ def show_tooltip_window(widget, text, x, y):
     _tooltip_window.wm_geometry(f"+{x+10}+{y+10}")
     label = tk.Label(_tooltip_window, text=text, background="#ffffcc",
                      relief="solid", borderwidth=1, font=("Calibri", 9),
-                     wraplength=300, padx=5, pady=3)
+                     wraplength=420, padx=5, pady=3)
     label.pack()
 
 def hide_tooltip(event=None):
@@ -109,6 +113,8 @@ class InvestmentApp:
         self.current_prices = {}
         self.update_thread_running = True
         self.auto_update_enabled = True
+        self._price_lock = threading.Lock()
+        self.target_shares = dict(TARGET_SHARES)
 
         self.load_user_assets()
         self.create_widgets()
@@ -157,7 +163,9 @@ class InvestmentApp:
 
             if bonds_from_db:
                 self.bonds = bonds_from_db
-            # Если нет в БД — оставляем из конфига (BONDS)
+
+        from DB.database import get_user_target_shares
+        self.target_shares = get_user_target_shares(self.user_id)
 
     def show_multiplier_chart(self, ticker, company_name, indicator_name, full_years, ltm_years, year_values,
                               higher_better):
@@ -519,75 +527,51 @@ class InvestmentApp:
 
         cursor = conn.cursor()
         cursor.execute("USE investment_portfolio")
-
-        # Месяцы для локализации
+        uid = self.user_id
         months_ru = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн',
                      'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек']
-
-        # Инициализируем данные по месяцам
         monthly_data = {i: {'deposits': 0, 'tax_refunds': 0, 'purchases': 0,
                             'dividends': 0, 'coupons': 0} for i in range(1, 13)}
 
-        # Пополнения (из deposits)
-        cursor.execute(f"""
-            SELECT MONTH(date), SUM(amount) FROM deposits 
-            WHERE YEAR(date) = {year}
-            GROUP BY MONTH(date)
-        """)
-        for row in cursor.fetchall():
-            monthly_data[row[0]]['deposits'] = float(row[1] or 0)
+        def month_sums(sql):
+            cursor.execute(sql, (year, uid))
+            for row in cursor.fetchall():
+                yield row[0], float(row[1] or 0)
 
-        # Налоговые вычеты (из tax_deductions и tax_refunds)
-        cursor.execute(f"""
-            SELECT MONTH(date), SUM(amount) FROM tax_deductions 
-            WHERE YEAR(date) = {year}
-            GROUP BY MONTH(date)
-        """)
-        for row in cursor.fetchall():
-            monthly_data[row[0]]['tax_refunds'] += float(row[1] or 0)
+        for month, amount in month_sums(
+            "SELECT MONTH(date), SUM(amount) FROM deposits WHERE YEAR(date)=%s AND user_id=%s GROUP BY MONTH(date)"
+        ):
+            monthly_data[month]['deposits'] = amount
 
-        cursor.execute(f"""
-            SELECT MONTH(date), SUM(amount) FROM tax_refunds 
-            WHERE YEAR(date) = {year}
-            GROUP BY MONTH(date)
-        """)
-        for row in cursor.fetchall():
-            monthly_data[row[0]]['tax_refunds'] += float(row[1] or 0)
+        for month, amount in month_sums(
+            "SELECT MONTH(date), SUM(amount) FROM tax_deductions WHERE YEAR(date)=%s AND user_id=%s GROUP BY MONTH(date)"
+        ):
+            monthly_data[month]['tax_refunds'] += amount
 
-        # Покупки (акции + облигации)
-        cursor.execute(f"""
-            SELECT MONTH(date), SUM(total_amount) FROM stock_trades 
-            WHERE YEAR(date) = {year} AND operation = 'buy'
-            GROUP BY MONTH(date)
-        """)
-        for row in cursor.fetchall():
-            monthly_data[row[0]]['purchases'] += float(row[1] or 0)
+        for month, amount in month_sums(
+            "SELECT MONTH(date), SUM(amount) FROM tax_refunds WHERE YEAR(date)=%s AND user_id=%s GROUP BY MONTH(date)"
+        ):
+            monthly_data[month]['tax_refunds'] += amount
 
-        cursor.execute(f"""
-            SELECT MONTH(date), SUM(total_amount) FROM bond_trades 
-            WHERE YEAR(date) = {year} AND operation = 'buy'
-            GROUP BY MONTH(date)
-        """)
-        for row in cursor.fetchall():
-            monthly_data[row[0]]['purchases'] += float(row[1] or 0)
+        for month, amount in month_sums(
+            "SELECT MONTH(date), SUM(total_amount) FROM stock_trades WHERE YEAR(date)=%s AND user_id=%s AND operation='buy' GROUP BY MONTH(date)"
+        ):
+            monthly_data[month]['purchases'] += amount
 
-        # Дивиденды
-        cursor.execute(f"""
-            SELECT MONTH(date), SUM(amount) FROM dividends 
-            WHERE YEAR(date) = {year}
-            GROUP BY MONTH(date)
-        """)
-        for row in cursor.fetchall():
-            monthly_data[row[0]]['dividends'] = float(row[1] or 0)
+        for month, amount in month_sums(
+            "SELECT MONTH(date), SUM(total_amount) FROM bond_trades WHERE YEAR(date)=%s AND user_id=%s AND operation='buy' GROUP BY MONTH(date)"
+        ):
+            monthly_data[month]['purchases'] += amount
 
-        # Купоны
-        cursor.execute(f"""
-            SELECT MONTH(date), SUM(amount) FROM coupons 
-            WHERE YEAR(date) = {year}
-            GROUP BY MONTH(date)
-        """)
-        for row in cursor.fetchall():
-            monthly_data[row[0]]['coupons'] = float(row[1] or 0)
+        for month, amount in month_sums(
+            "SELECT MONTH(date), SUM(amount) FROM dividends WHERE YEAR(date)=%s AND user_id=%s GROUP BY MONTH(date)"
+        ):
+            monthly_data[month]['dividends'] = amount
+
+        for month, amount in month_sums(
+            "SELECT MONTH(date), SUM(amount) FROM coupons WHERE YEAR(date)=%s AND user_id=%s GROUP BY MONTH(date)"
+        ):
+            monthly_data[month]['coupons'] = amount
 
         conn.close()
 
@@ -730,19 +714,24 @@ class InvestmentApp:
             conn = create_connection()
             cursor = conn.cursor()
             cursor.execute("USE investment_portfolio")
-            cursor.execute(f"SELECT SUM(amount) FROM dividends WHERE YEAR(date) = {year - 1}")
+            cursor.execute(
+                "SELECT SUM(amount) FROM dividends WHERE YEAR(date) = %s AND user_id = %s",
+                (year - 1, self.user_id),
+            )
             prev_div = float(cursor.fetchone()[0] or 0)
 
             if prev_div >= 0:
-                # ... новый код вместо старого ...
-                cursor.execute(f"SELECT SUM(amount) FROM coupons WHERE YEAR(date) = {year - 1}")
+                cursor.execute(
+                    "SELECT SUM(amount) FROM coupons WHERE YEAR(date) = %s AND user_id = %s",
+                    (year - 1, self.user_id),
+                )
                 prev_coupons = float(cursor.fetchone()[0] or 0)
                 prev_total = prev_div + prev_coupons
 
                 current_total = total_div + total_coupon
                 share_of_last = (current_total / prev_total * 100) if prev_total > 0 else 0
 
-                growth_text = f'Отношение дивидендов {year}/{year - 1} = {share_of_last:.2f}%'
+                growth_text = f'Див.+купоны {year} к {year - 1}: {share_of_last:.1f}%'
 
                 self.cashflow_ax.text(0.98, 0.95, growth_text, transform=self.cashflow_ax.transAxes,
                                       fontsize=8, verticalalignment='top', horizontalalignment='right',
@@ -869,6 +858,7 @@ class InvestmentApp:
             ("Продажа облигаций", lambda: self.add_trade('bond', 'sell')),
             ("Обновить цены", self.refresh_prices),
             ("Автообновление", self.toggle_auto_update),
+            ("Бэкап БД", self.backup_database),
             ("Налоговый вычет", self.add_tax_refund),
             ("Настройки", self.open_settings),
         ]
@@ -953,6 +943,12 @@ class InvestmentApp:
         tree.tag_configure('deviation_positive', foreground=COLORS['success'])
         tree.tag_configure('deviation_negative', foreground=COLORS['danger'])
 
+    def _bind_metric_tip(self, widget, text):
+        def on_enter(event):
+            show_tooltip_window(widget, text, event.x_root, event.y_root)
+        widget.bind("<Enter>", on_enter)
+        widget.bind("<Leave>", hide_tooltip)
+
     def create_summary_tab(self):
         '''Создание вкладки "Сводная"'''
         frame = ttk.Frame(self.notebook)
@@ -992,6 +988,44 @@ class InvestmentApp:
                      bg=color, fg="white").pack()
             tk.Label(card, textvariable=var, font=("Calibri", 16, "bold"),
                      bg=color, fg="white").pack()
+
+        analytics_cards = tk.Frame(bg_frame, bg=COLORS['table_header'])
+        analytics_cards.pack(fill=tk.X, padx=15, pady=(0, 5))
+        self.twr_var = tk.StringVar(value="—")
+        self.drawdown_var = tk.StringVar(value="—")
+        self.alpha_var = tk.StringVar(value="—")
+        self.beta_var = tk.StringVar(value="—")
+        self.top3_var = tk.StringVar(value="—")
+        extra_cards = [
+            ("Доходность TWR", self.twr_var, COLORS['info'],
+             "Годовая доходность портфеля без учёта того, когда вы вносили деньги.\n"
+             "XIRR сверху — с учётом дат пополнений. TWR отвечает на вопрос:\n"
+             "«как работали сами бумаги»."),
+            ("Макс. просадка", self.drawdown_var, COLORS['danger'],
+             "Самое глубокое падение стоимости от пика до дна за последний год.\n"
+             "Например −18% значит: от максимума портфель просел на 18%."),
+            ("К индексу Мосбиржи", self.alpha_var, COLORS['warning'],
+             "На сколько процентных пунктов портфель обогнал (+) или отстал (−)\n"
+             "от индекса полной доходности MCFTR за тот же период."),
+            ("Бета / корреляция", self.beta_var, COLORS['success'],
+             "Бета: если индекс вырос на 1%, портфель в среднем вырос на β%.\n"
+             "β > 1 — волатильнее рынка, β < 1 — спокойнее, β ≈ 1 — как рынок.\n"
+             "Корреляция (−1…1): насколько ваши движения совпадают с индексом."),
+            ("Доля топ-3 бумаг", self.top3_var, '#ce93d8',
+             "Какая доля брокерского портфеля сидит в трёх крупнейших позициях.\n"
+             "Чем выше — тем сильнее концентрация риска."),
+        ]
+        for title, var, color, tip in extra_cards:
+            card = tk.Frame(analytics_cards, bg=color, relief=tk.FLAT, padx=5, pady=3, width=160, height=55)
+            card.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=5)
+            card.pack_propagate(False)
+            lbl_t = tk.Label(card, text=title, font=("Calibri", 9), bg=color, fg="white")
+            lbl_t.pack()
+            lbl_v = tk.Label(card, textvariable=var, font=("Calibri", 15, "bold"), bg=color, fg="white")
+            lbl_v.pack()
+            self._bind_metric_tip(card, tip)
+            self._bind_metric_tip(lbl_t, tip)
+            self._bind_metric_tip(lbl_v, tip)
 
         # Таблица
         columns = ('name', 'ticker', 'type', 'quantity', 'avg_price', 'current_price',
@@ -1363,6 +1397,20 @@ class InvestmentApp:
         self.cache_btn = StyledButton(control_frame, "🔄 Обновить кэш", self.init_cache, width=18)
         self.cache_btn.pack(side=tk.LEFT, padx=10)
 
+        self.show_buy_markers = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            control_frame,
+            text="Покупки на графике",
+            variable=self.show_buy_markers,
+            command=self._toggle_buy_markers,
+            bg=COLORS['bg_header'],
+            fg=COLORS['text'],
+            selectcolor=COLORS['bg_card'],
+            activebackground=COLORS['bg_header'],
+            activeforeground=COLORS['text'],
+            font=("Calibri", 9),
+        ).pack(side=tk.LEFT, padx=12)
+
         # ← ПРОГРЕСС-БАР СПРАВА
         progress_container = tk.Frame(control_frame, bg=COLORS['bg_header'])
         progress_container.pack(side=tk.LEFT, padx=(20, 0), fill=tk.X, expand=True)
@@ -1394,13 +1442,16 @@ class InvestmentApp:
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
         self.history_figure = Figure(figsize=(14, 8), dpi=100, facecolor=COLORS['bg_main'])
-        self.history_ax = self.history_figure.add_subplot(111)
-        self.history_ax.set_facecolor(COLORS['table_odd'])
-        self.history_ax.tick_params(colors=COLORS['text'])
-        self.history_ax.grid(True, alpha=0.3, color=COLORS['text_secondary'])
+        self.history_ax = self.history_figure.add_subplot(211)
+        self.history_dd_ax = self.history_figure.add_subplot(212, sharex=self.history_ax)
+        for ax in (self.history_ax, self.history_dd_ax):
+            ax.set_facecolor(COLORS['table_odd'])
+            ax.tick_params(colors=COLORS['text'])
+            ax.grid(True, alpha=0.3, color=COLORS['text_secondary'])
+        self.history_figure.subplots_adjust(left=0.08, right=0.92, top=0.94, bottom=0.08, hspace=0.12)
 
-        self.history_figure.subplots_adjust(left=0.08, right=0.95, top=0.95, bottom=0.08)
-
+        self.history_dd_twin = None
+        self._buy_marker_artists = []
         self.history_canvas = FigureCanvasTkAgg(self.history_figure, graph_frame)
         self.history_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
@@ -1823,35 +1874,41 @@ class InvestmentApp:
 
     def init_cache(self):
         """Инициализация кэша исторических цен"""
-        from history_cache import STOCKS, BONDS, INDEX_TICKER, ensure_prices_cached, ensure_index_cached
-        from datetime import datetime
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from history_cache import INDEX_TICKER, ensure_prices_cached, ensure_index_cached
 
-        all_tickers = STOCKS + BONDS + [INDEX_TICKER]
-        total = len(all_tickers)
+        stocks = list(self.stocks)
+        bonds = list(self.bonds)
+        jobs = [(t, "stock") for t in stocks] + [(t, "bond") for t in bonds] + [(INDEX_TICKER, "index")]
+        total = len(jobs)
 
         self.progress_bar['value'] = 0
         self.progress_bar['maximum'] = total
         self.progress_label.config(text=f"0/{total}")
-        self.status_label.config(text="Инициализация кэша...")
+        self.status_label.config(text="Обновление кэша (только новые дни)...")
         self.root.update()
 
         def run_init():
             start = datetime(2023, 6, 30).date()
             end = datetime.now().date()
+            done = [0]
 
-            for i, ticker in enumerate(all_tickers, 1):
-                if ticker == INDEX_TICKER:
-                    ensure_index_cached(ticker, start, end, force_refresh=True)
+            def one(job):
+                ticker, kind = job
+                if kind == "index":
+                    ensure_index_cached(ticker, start, end, force_refresh=False)
                 else:
-                    security_type = 'stock' if ticker in STOCKS else 'bond'
-                    ensure_prices_cached(ticker, security_type, start, end, force_refresh=True)
+                    ensure_prices_cached(ticker, kind, start, end, force_refresh=False)
 
-                # Обновляем прогресс
-                progress = int(i / total * 100)
-                self.root.after(0, lambda v=progress, c=i: self._update_progress(v, c, total))
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures = [pool.submit(one, job) for job in jobs]
+                for _ in as_completed(futures):
+                    done[0] += 1
+                    current = done[0]
+                    self.root.after(0, lambda c=current: self._update_progress(int(c / total * 100), c, total))
 
             self.root.after(0, lambda: self.progress_label.config(text="Готово"))
-            self.root.after(0, lambda: self.status_label.config(text="Кэш исторических цен обновлен!"))
+            self.root.after(0, lambda: self.status_label.config(text="Кэш исторических цен обновлен"))
 
         threading.Thread(target=run_init, daemon=True).start()
 
@@ -1892,7 +1949,7 @@ class InvestmentApp:
             self.root.after(0, lambda: self.progress_bar.start())
             self.root.after(0, lambda: self.progress_label.config(text="Загрузка данных..."))
 
-            history_df = get_portfolio_history(start_date, end_date)
+            history_df = get_portfolio_history(start_date, end_date, user_id=self.user_id)
             if history_df is None or history_df.empty:
                 self.root.after(0, lambda: self._update_history_plot(None, None))
                 return
@@ -1905,8 +1962,8 @@ class InvestmentApp:
             conn = create_connection()
             cursor = conn.cursor()
             cursor.execute("USE investment_portfolio")
-            cursor.execute("SELECT date, amount FROM deposits WHERE date >= %s AND date <= %s ORDER BY date",
-                           (start_date, end_date))
+            cursor.execute("SELECT date, amount FROM deposits WHERE user_id = %s AND date >= %s AND date <= %s ORDER BY date",
+                           (self.user_id, start_date, end_date))
             deposits = cursor.fetchall()
 
             conn.close()
@@ -1965,41 +2022,50 @@ class InvestmentApp:
         threading.Thread(target=load_and_plot, daemon=True).start()
 
     # main.py
+    def _toggle_buy_markers(self):
+        visible = bool(self.show_buy_markers.get()) if hasattr(self, "show_buy_markers") else True
+        for artist in getattr(self, "_buy_marker_artists", []):
+            artist.set_visible(visible)
+        if hasattr(self, "history_canvas"):
+            self.history_canvas.draw_idle()
+
     def _update_history_plot(self, history_df, index_df):
-        """Обновление графика с реальным и индексным портфелем"""
+        """Стоимость портфеля + дневное % без пополнений и просадка от пика."""
+        self._buy_marker_artists = []
+        if getattr(self, "history_dd_twin", None) is not None:
+            try:
+                self.history_dd_twin.remove()
+            except Exception:
+                pass
+            self.history_dd_twin = None
+
         self.history_ax.clear()
+        self.history_dd_ax.clear()
         self.history_ax.set_facecolor(COLORS['table_odd'])
+        self.history_dd_ax.set_facecolor(COLORS['table_odd'])
 
         if history_df is not None and not history_df.empty:
-            # Портфель
             self.history_ax.plot(history_df['date'], history_df['value'],
                                  color=COLORS['accent'], linewidth=2, label='Ваш портфель')
-            self.history_ax.plot(history_df['date'], history_df['cash'],
-                                 color=COLORS['info'], linewidth=1, alpha=0.7, label='Денежные средства')
+            if 'cash' in history_df.columns:
+                self.history_ax.plot(history_df['date'], history_df['cash'],
+                                     color=COLORS['info'], linewidth=1, alpha=0.7, label='Денежные средства')
 
-            # Индекс MCFTR
-            if 'index_value' in index_df.columns:
+            if index_df is not None and 'index_value' in index_df.columns:
                 self.history_ax.plot(index_df['date'], index_df['index_value'],
                                      color=COLORS['warning'], linewidth=2, label='Индекс MCFTR')
 
-            # Инфляция (взносы, проиндексированные рядом ЦБ РФ)
-            if 'inflated_value' in index_df.columns and index_df['inflated_value'].notna().any():
+            if index_df is not None and 'inflated_value' in index_df.columns and index_df['inflated_value'].notna().any():
                 self.history_ax.plot(index_df['date'], index_df['inflated_value'],
                                      color='#ef5350', linewidth=1.5, linestyle=':',
                                      label='Инфляция (ЦБ РФ, г/г)')
 
-            self.history_ax.set_title('Динамика стоимости портфеля vs Индекс МосБиржи', color=COLORS['text'],
-                                      fontsize=14)
-            self.history_ax.set_xlabel('Дата', color=COLORS['text'])
-            self.history_ax.set_ylabel('Стоимость (₽)', color=COLORS['text'])
+            values = history_df['value'].astype(float)
+            dates = pd.to_datetime(history_df['date'])
+            peak = values.cummax()
+            with np.errstate(divide='ignore', invalid='ignore'):
+                drawdown = ((values - peak) / peak.replace(0, np.nan) * 100).fillna(0)
 
-            # Легенду перемещаем ВНИЗ (под график или в правый нижний угол)
-            self.history_ax.legend(loc='upper left', bbox_to_anchor=(0.02, 0.90), fontsize=9)
-
-            self.history_ax.tick_params(colors=COLORS['text'])
-            self.history_ax.grid(True, alpha=0.3)
-
-            # Расчет чистого инвестиционного дохода
             from DB.db_config import create_connection
 
             conn = create_connection()
@@ -2008,68 +2074,143 @@ class InvestmentApp:
 
             start_date = history_df['date'].iloc[0]
             end_date = history_df['date'].iloc[-1]
+            uid = self.user_id
 
-            # Сумма пополнений за период
-            cursor.execute("SELECT SUM(amount) FROM deposits WHERE date BETWEEN %s AND %s",
-                           (start_date, end_date))
+            cursor.execute(
+                "SELECT SUM(amount) FROM deposits WHERE user_id=%s AND date BETWEEN %s AND %s",
+                (uid, start_date, end_date),
+            )
             total_deposits_period = float(cursor.fetchone()[0] or 0)
-
-            # Сумма налоговых вычетов за период
-            cursor.execute("SELECT SUM(amount) FROM tax_deductions WHERE date BETWEEN %s AND %s",
-                           (start_date, end_date))
+            cursor.execute(
+                "SELECT SUM(amount) FROM tax_deductions WHERE user_id=%s AND date BETWEEN %s AND %s",
+                (uid, start_date, end_date),
+            )
             total_tax_ded = float(cursor.fetchone()[0] or 0)
-            cursor.execute("SELECT SUM(amount) FROM tax_refunds WHERE date BETWEEN %s AND %s",
-                           (start_date, end_date))
+            cursor.execute(
+                "SELECT SUM(amount) FROM tax_refunds WHERE user_id=%s AND date BETWEEN %s AND %s",
+                (uid, start_date, end_date),
+            )
             total_tax_ref = float(cursor.fetchone()[0] or 0)
 
-            # Сумма дивидендов и купонов за период
-            cursor.execute("SELECT SUM(amount) FROM dividends WHERE date BETWEEN %s AND %s",
-                           (start_date, end_date))
-            total_dividends_period = float(cursor.fetchone()[0] or 0)
-            cursor.execute("SELECT SUM(amount) FROM coupons WHERE date BETWEEN %s AND %s",
-                           (start_date, end_date))
-            total_coupons_period = float(cursor.fetchone()[0] or 0)
+            cashflows = {}
+            for table in ("deposits", "tax_deductions", "tax_refunds"):
+                cursor.execute(
+                    f"SELECT date, amount FROM {table} WHERE user_id=%s AND date BETWEEN %s AND %s",
+                    (uid, start_date, end_date),
+                )
+                for day, amount in cursor.fetchall():
+                    key = pd.Timestamp(day).normalize()
+                    cashflows[key] = cashflows.get(key, 0.0) + float(amount or 0)
 
+            cursor.execute(
+                """
+                SELECT date FROM stock_trades
+                WHERE user_id=%s AND operation='buy' AND date BETWEEN %s AND %s
+                UNION
+                SELECT date FROM bond_trades
+                WHERE user_id=%s AND operation='buy' AND date BETWEEN %s AND %s
+                """,
+                (uid, start_date, end_date, uid, start_date, end_date),
+            )
+            buy_dates = [row[0] for row in cursor.fetchall()]
             conn.close()
 
-            # Внешние поступления (пополнения + вычеты)
-            total_external = total_deposits_period + total_tax_ded + total_tax_ref
+            daily_pct = []
+            prev = None
+            for dt, val in zip(dates, values):
+                val = float(val or 0)
+                cf = cashflows.get(pd.Timestamp(dt).normalize(), 0.0)
+                if prev is None or prev <= 0:
+                    daily_pct.append(0.0)
+                    prev = val
+                    continue
+                daily_pct.append((val - cf - prev) / prev * 100.0)
+                prev = val
+            daily_pct = pd.Series(daily_pct, index=dates)
 
-            # Финальная и начальная стоимость портфеля
+            bar_colors = [COLORS['success'] if x >= 0 else COLORS['danger'] for x in daily_pct]
+            self.history_dd_ax.bar(
+                dates, daily_pct, width=pd.Timedelta(days=1),
+                color=bar_colors, alpha=0.85, label='День, % (без пополнений)',
+                zorder=3,
+            )
+            self.history_dd_ax.axhline(0, color=COLORS['text_secondary'], linewidth=0.7)
+            self.history_dd_ax.set_ylabel('За день, %', color=COLORS['text'])
+            self.history_dd_ax.tick_params(colors=COLORS['text'])
+            self.history_dd_ax.grid(True, alpha=0.3)
+
+            max_day = float(daily_pct.max()) if len(daily_pct) else 0
+            min_day = float(daily_pct.min()) if len(daily_pct) else 0
+            span = max(abs(max_day), abs(min_day), 1.0)
+            self.history_dd_ax.set_ylim(-span * 1.25, span * 1.25)
+
+            self.history_dd_twin = self.history_dd_ax.twinx()
+            self.history_dd_twin.set_facecolor(COLORS['table_odd'])
+            self.history_dd_twin.fill_between(
+                dates, drawdown.fillna(0), 0,
+                color=COLORS['danger'], alpha=0.25, label='Просадка от пика', zorder=1,
+            )
+            self.history_dd_twin.plot(dates, drawdown.fillna(0), color=COLORS['danger'], linewidth=1.1, zorder=2)
+            min_dd = float(drawdown.min()) if drawdown.notna().any() else 0
+            self.history_dd_twin.set_ylim(min(min_dd * 1.2, -1), 2)
+            self.history_dd_twin.set_ylabel('Просадка, %', color=COLORS['danger'])
+            self.history_dd_twin.tick_params(axis='y', colors=COLORS['danger'])
+
+            h1, l1 = self.history_dd_ax.get_legend_handles_labels()
+            h2, l2 = self.history_dd_twin.get_legend_handles_labels()
+            self.history_dd_ax.legend(h1 + h2, l1 + l2, loc='lower left', fontsize=8)
+
+            self.history_ax.set_title('Стоимость портфеля, дневное изменение и просадка', color=COLORS['text'],
+                                      fontsize=13)
+            self.history_ax.set_ylabel('Стоимость (₽)', color=COLORS['text'])
+            self.history_ax.tick_params(colors=COLORS['text'])
+            self.history_ax.grid(True, alpha=0.3)
+            plt.setp(self.history_ax.get_xticklabels(), visible=False)
+
+            if buy_dates:
+                hist_pts = pd.DataFrame({
+                    'date': pd.to_datetime(dates).dt.tz_localize(None),
+                    'value': values.to_numpy(),
+                    'pct': daily_pct.to_numpy(dtype=float),
+                }).sort_values('date')
+                buys = pd.DataFrame({'date': pd.to_datetime(buy_dates)})
+                buys['date'] = pd.to_datetime(buys['date']).dt.tz_localize(None)
+                buys = buys.sort_values('date')
+                aligned = pd.merge_asof(buys, hist_pts, on='date', direction='nearest')
+                aligned = aligned.dropna(subset=['value', 'pct'])
+                show_dots = bool(self.show_buy_markers.get()) if hasattr(self, "show_buy_markers") else True
+                if not aligned.empty:
+                    top_dots = self.history_ax.scatter(
+                        aligned['date'], aligned['value'],
+                        s=22, c='#212121', zorder=5, label='Покупки',
+                    )
+                    bot_dots = self.history_dd_ax.scatter(
+                        aligned['date'], aligned['pct'],
+                        s=18, c='#212121', zorder=6, label='Покупки',
+                    )
+                    top_dots.set_visible(show_dots)
+                    bot_dots.set_visible(show_dots)
+                    self._buy_marker_artists = [top_dots, bot_dots]
+
+            self.history_ax.legend(loc='upper left', fontsize=8)
+
+            total_external = total_deposits_period + total_tax_ded + total_tax_ref
             final_value = history_df['value'].iloc[-1]
             start_value = history_df['value'].iloc[0]
-
-            # Реальная прибыль = изменение стоимости + дивиденды + купоны - внешние поступления
-            # НО: дивиденды и купоны уже учтены в value через cash, поэтому:
-            # Чистая прибыль = финальная стоимость - начальная стоимость - внешние поступления
             net_profit = final_value - start_value - total_external
-
-            # Начальный капитал (то, что реально вложено)
             initial_investment = start_value + total_external
-
-            # Для первой точки (когда start_value = 0):
             if start_value == 0:
-                # Считаем доходность от первого пополнения
                 portfolio_growth = (net_profit / total_external * 100) if total_external > 0 else 0
             else:
                 portfolio_growth = (net_profit / initial_investment * 100) if initial_investment > 0 else 0
 
-            # Для индекса
-            if index_df is not None and 'index_value' in index_df.columns and not index_df[
-                'index_value'].isnull().all():
-                # Находим первую и последнюю не нулевую стоимость индекса
+            if index_df is not None and 'index_value' in index_df.columns and not index_df['index_value'].isnull().all():
                 index_values = index_df['index_value'].dropna()
                 index_values = index_values[index_values > 0]
-
                 if len(index_values) > 0:
                     index_start = index_values.iloc[0]
                     index_final = index_values.iloc[-1]
-
-                    # Рост индекса в процентах
-                    if index_start > 0:
-                        index_pct = ((index_final - index_start) / index_start * 100)
-                    else:
-                        index_pct = 0
+                    index_pct = ((index_final - index_start) / index_start * 100) if index_start > 0 else 0
                 else:
                     index_final = 0
                     index_pct = 0
@@ -2077,19 +2218,19 @@ class InvestmentApp:
                 index_final = 0
                 index_pct = 0
 
-            # Текст статистики
-            info_text = (f'Портфель: {final_value:,.0f} ₽ ({portfolio_growth:+.1f}%) | '
-                         f'Индекс: {index_final:,.0f} ₽ ({index_pct:+.1f}%)')
-
-            # Размещаем надпись в левом верхнем углу
-            self.history_ax.text(0.02, 0.95, info_text, transform=self.history_ax.transAxes,
+            info_text = (
+                f'Портфель: {final_value:,.0f} ₽ ({portfolio_growth:+.1f}%) | '
+                f'Индекс: {index_final:,.0f} ₽ ({index_pct:+.1f}%) | '
+                f'Лучший день: {max_day:+.2f}% | Худший день: {min_day:+.2f}% | '
+                f'Макс. просадка: {min_dd:.1f}%'
+            )
+            self.history_ax.text(0.02, 0.92, info_text, transform=self.history_ax.transAxes,
                                  bbox=dict(boxstyle="round,pad=0.3", facecolor=COLORS['accent_light'], alpha=0.8),
-                                 fontsize=10, color=COLORS['text'])
+                                 fontsize=9, color=COLORS['text'])
 
-        GOAL_AMOUNT = 1500000  # или загрузить из БД
+        GOAL_AMOUNT = 1_500_000
         self.history_ax.axhline(y=GOAL_AMOUNT, color='red', linestyle='--',
-                                linewidth=1.5, label='Цель: 1,7 млн ₽')
-
+                                linewidth=1.2, label=f'Цель: {GOAL_AMOUNT/1_000_000:.1f} млн ₽')
         self.history_canvas.draw()
 
     def add_tax_deduction(self):
@@ -2104,7 +2245,8 @@ class InvestmentApp:
                 kwargs['amount'],
                 kwargs['deduction_type'],
                 kwargs.get('description', ''),
-                kwargs.get('year')
+                kwargs.get('year'),
+                user_id=self.user_id
         ):
             messagebox.showinfo("Успех", "Налоговый вычет добавлен")
             self.load_tax_deductions_data()
@@ -2123,7 +2265,7 @@ class InvestmentApp:
             deduction_id = self.deductions_ids[selected[0]]
 
             from DB.database import delete_tax_deduction
-            if delete_tax_deduction(deduction_id):
+            if delete_tax_deduction(deduction_id, user_id=self.user_id):
                 messagebox.showinfo("Успех", "Вычет удален")
                 self.load_tax_deductions_data()
             else:
@@ -2241,19 +2383,81 @@ class InvestmentApp:
             conn.close()
             self.coupons_total_label.config(text=f"Всего купонов: {total_coupons:,.2f} ₽")
 
+        if hasattr(self, "accounts_tree"):
+            self.load_deposits_data()
+
     def refresh_prices(self):
-        '''Обновление цен'''
+        '''Обновление цен (один запрос в полёте).'''
+        if not self._price_lock.acquire(blocking=False):
+            self.status_label.config(text="Обновление уже идёт...")
+            return
         self.status_label.config(text="Обновление цен...")
-        self.root.update()
+        try:
+            self.root.update()
+        except tk.TclError:
+            self._price_lock.release()
+            return
 
         def update():
-            self.current_prices = get_all_prices(self.stocks, self.bonds)
-            self.root.after(0, self.update_all_tables)
-            self.root.after(0, self.load_data)
-            self.root.after(0, lambda: self.status_label.config(
-                text=f"Цены обновлены {datetime.now().strftime('%H:%M:%S')}"))
+            try:
+                log.info("Загрузка котировок ISS")
+                self.current_prices = get_all_prices(self.stocks, self.bonds)
+                self.root.after(0, self.update_all_tables)
+                self.root.after(0, self.load_data)
+                self.root.after(0, lambda: self.status_label.config(
+                    text=f"Цены обновлены {datetime.now().strftime('%H:%M:%S')}"))
+                self.root.after(200, self.refresh_analytics_metrics)
+            except Exception as exc:
+                log.warning("Ошибка обновления цен: %s", exc)
+                self.root.after(0, lambda: self.status_label.config(text=f"Ошибка цен: {exc}"))
+            finally:
+                self._price_lock.release()
 
         threading.Thread(target=update, daemon=True).start()
+
+    def backup_database(self):
+        def run():
+            try:
+                from services.backup import backup_database
+                path = backup_database()
+                self.root.after(0, lambda: messagebox.showinfo("Бэкап", f"Сохранено:\n{path}"))
+                self.root.after(0, lambda: self.status_label.config(text=f"Бэкап: {path}"))
+            except Exception as exc:
+                self.root.after(0, lambda: messagebox.showerror("Бэкап", str(exc)))
+
+        self.status_label.config(text="Создание бэкапа...")
+        threading.Thread(target=run, daemon=True).start()
+
+    def refresh_analytics(self):
+        threading.Thread(target=self._analytics_worker, daemon=True).start()
+
+    def refresh_analytics_metrics(self):
+        threading.Thread(target=self._analytics_worker, daemon=True).start()
+
+    def _analytics_worker(self):
+        try:
+            from services.analytics import compute_from_history
+            metrics = compute_from_history(self.user_id)
+
+            def apply():
+                twr = metrics.get("twr_ann") if metrics.get("twr_ann") is not None else metrics.get("twr")
+                self.twr_var.set(f"{twr:.2f}%" if twr is not None else "—")
+                dd = metrics.get("drawdown")
+                self.drawdown_var.set(f"{dd:.1f}%" if dd is not None else "—")
+                alpha = metrics.get("alpha")
+                self.alpha_var.set(f"{alpha:+.2f} п.п." if alpha is not None else "—")
+                beta = metrics.get("beta")
+                corr = metrics.get("corr")
+                if beta is not None and corr is not None:
+                    self.beta_var.set(f"{beta:.2f} / {corr:.2f}")
+                elif beta is not None:
+                    self.beta_var.set(f"{beta:.2f}")
+                else:
+                    self.beta_var.set("—")
+
+            self.root.after(0, apply)
+        except Exception as exc:
+            log.warning("Аналитика: %s", exc)
 
     def update_all_tables(self):
         stats = get_portfolio_stats(self.user_id)
@@ -2278,8 +2482,9 @@ class InvestmentApp:
                 current_value = pos['qty'] * current_price_rub
                 total_portfolio_value += current_value
 
-                from prices import get_current_price
-                current_price_percent = get_current_price(ticker, 'bond') or 0
+                from services.moex_client import LAST_QUOTES
+                quote = LAST_QUOTES.get(ticker) or {}
+                current_price_percent = quote.get("price_pct") or 0
 
                 all_positions.append(('bond', ticker, pos, current_price_rub, current_value, current_price_percent))
 
@@ -2316,7 +2521,7 @@ class InvestmentApp:
 
         # Получаем сумму вкладов
         from DB.database import get_deposit_accounts
-        deposits_accounts = get_deposit_accounts()
+        deposits_accounts = get_deposit_accounts(self.user_id)
         total_in_deposits_accounts = sum(float(acc[3]) for acc in deposits_accounts)
         total_all_value = total_portfolio_value + total_in_deposits_accounts
         self.total_value_with_deposits_var.set(f"{total_all_value:,.2f} ₽")
@@ -2328,6 +2533,10 @@ class InvestmentApp:
         profit_pct = (profit / total_purchases * 100) if total_purchases > 0 else 0
         self.total_profit_pct_var.set(f"{profit_pct:.2f}%")
 
+        from DB.database import get_income_sums_by_ticker
+        div_by_ticker = get_income_sums_by_ticker("dividends", self.user_id)
+        coupon_by_ticker = get_income_sums_by_ticker("coupons", self.user_id)
+
         # Заполнение таблиц
         for i, item in enumerate(all_positions):
             if len(item) == 5:  # акция
@@ -2337,7 +2546,7 @@ class InvestmentApp:
                 profit_pct_pos = (position_profit / pos['total_cost'] * 100) if pos['total_cost'] > 0 else 0
                 share = (current_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0
 
-                target_share = TARGET_SHARES.get(ticker, 0)
+                target_share = self.target_shares.get(ticker, TARGET_SHARES.get(ticker, 0))
                 deviation = share - target_share
 
                 to_buy = 0
@@ -2346,13 +2555,7 @@ class InvestmentApp:
                     needed_value = target_value - current_value
                     to_buy = int(needed_value / current_price)
 
-                from DB.db_config import create_connection
-                conn = create_connection()
-                cursor = conn.cursor()
-                cursor.execute("USE investment_portfolio")
-                cursor.execute("SELECT SUM(amount) FROM dividends WHERE ticker = %s", (ticker,))
-                total_div = cursor.fetchone()[0] or 0
-                conn.close()
+                total_div = div_by_ticker.get(ticker, 0)
 
                 profit_with_div = position_profit + float(total_div)
                 profit_pct_with_div = (profit_with_div / pos['total_cost'] * 100) if pos['total_cost'] > 0 else 0
@@ -2422,7 +2625,7 @@ class InvestmentApp:
                 position_profit = current_value - pos['total_cost']
                 profit_pct_pos = (position_profit / pos['total_cost'] * 100) if pos['total_cost'] > 0 else 0
                 share = (current_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0
-                target_share = TARGET_SHARES.get(ticker, 0)
+                target_share = self.target_shares.get(ticker, TARGET_SHARES.get(ticker, 0))
                 deviation = share - target_share
 
                 to_buy = 0
@@ -2431,13 +2634,7 @@ class InvestmentApp:
                     needed_value = target_value - current_value
                     to_buy = int(needed_value / current_price_rub)
 
-                from DB.db_config import create_connection
-                conn = create_connection()
-                cursor = conn.cursor()
-                cursor.execute("USE investment_portfolio")
-                cursor.execute("SELECT SUM(amount) FROM coupons WHERE ticker = %s", (ticker,))
-                total_coupon = cursor.fetchone()[0] or 0
-                conn.close()
+                total_coupon = coupon_by_ticker.get(ticker, 0)
                 profit_with_coupon = position_profit + float(total_coupon)
                 profit_pct_with_coupon = (profit_with_coupon / pos['total_cost'] * 100) if pos['total_cost'] > 0 else 0
                 type_name = "Облигация"
@@ -2485,6 +2682,15 @@ class InvestmentApp:
                 self.summary_tree.insert('', tk.END, values=summary_values, tags=(row_tag,))
                 self.bonds_tree.insert('', tk.END, values=row_data, tags=(row_tag,))
 
+        from services.analytics import top3_share_pct
+        weights = []
+        for item in all_positions:
+            current_value = item[4]
+            if total_portfolio_value > 0:
+                weights.append(current_value / total_portfolio_value * 100)
+        if hasattr(self, "top3_var"):
+            self.top3_var.set(f"{top3_share_pct(weights):.0f}%")
+
         # Справедливая стоимость всего портфеля
         if hasattr(self, 'fair_prices'):
             total_fair_stocks = sum(
@@ -2505,13 +2711,22 @@ class InvestmentApp:
         cursor.execute("USE investment_portfolio")
         cursor.execute("SELECT date, amount FROM deposits WHERE user_id = %s ORDER BY date", (self.user_id,))
         deposits = cursor.fetchall()
+        cursor.execute("SELECT date, amount FROM tax_refunds WHERE user_id = %s ORDER BY date", (self.user_id,))
+        refunds = cursor.fetchall()
+        cursor.execute("SELECT date, amount FROM tax_deductions WHERE user_id = %s ORDER BY date", (self.user_id,))
+        deductions = cursor.fetchall()
         conn.close()
 
-        if deposits:
-            current_value = total_portfolio_value
-            cashflows = [-float(d[1]) for d in deposits]
-            dates = [d[0] for d in deposits]
-            cashflows.append(current_value)
+        cashflows = []
+        dates = []
+        for d in list(deposits) + list(refunds) + list(deductions):
+            cashflows.append(-float(d[1]))
+            dates.append(d[0])
+        if cashflows:
+            paired = sorted(zip(dates, cashflows), key=lambda x: x[0])
+            dates = [p[0] for p in paired]
+            cashflows = [p[1] for p in paired]
+            cashflows.append(total_portfolio_value)
             dates.append(datetime.now().date())
             xirr = calculate_xirr(cashflows, dates)
             self.xirr_var.set(f"{xirr:.2f}%")
@@ -2723,7 +2938,7 @@ class InvestmentApp:
         start_date = datetime(2023, 9, 30)
         end_date = datetime.now()
 
-        history_df = get_portfolio_history(start_date, end_date)
+        history_df = get_portfolio_history(start_date, end_date, user_id=self.user_id)
 
         if history_df is not None and not history_df.empty:
             # Получаем пополнения и налоговые вычеты для вычитания
@@ -2732,15 +2947,11 @@ class InvestmentApp:
             cursor.execute("USE investment_portfolio")
 
             # Пополнения
-            cursor.execute("SELECT date, amount FROM deposits ORDER BY date")
+            cursor.execute("SELECT date, amount FROM deposits WHERE user_id = %s ORDER BY date", (self.user_id,))
             deposits = cursor.fetchall()
-
-            # Налоговые вычеты
-            cursor.execute("SELECT date, amount FROM tax_deductions ORDER BY date")
+            cursor.execute("SELECT date, amount FROM tax_deductions WHERE user_id = %s ORDER BY date", (self.user_id,))
             tax_deductions = cursor.fetchall()
-
-            # Возвраты налогов
-            cursor.execute("SELECT date, amount FROM tax_refunds ORDER BY date")
+            cursor.execute("SELECT date, amount FROM tax_refunds WHERE user_id = %s ORDER BY date", (self.user_id,))
             tax_refunds = cursor.fetchall()
 
             conn.close()
@@ -2812,6 +3023,77 @@ class InvestmentApp:
         canvas2.draw()
         canvas2.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
+        from DB.database import get_deposit_accounts
+        stocks_value = sum(
+            pos['qty'] * self.current_prices.get(ticker, 0)
+            for ticker, pos in stats['stock_positions'].items() if pos['qty'] > 0
+        )
+        bonds_value = sum(
+            pos['qty'] * self.current_prices.get(ticker, 0)
+            for ticker, pos in stats['bond_positions'].items() if pos['qty'] > 0
+        )
+        deposits_value = sum(float(acc[3] or 0) for acc in get_deposit_accounts(self.user_id))
+        broker_total = stocks_value + bonds_value
+
+        frame3 = ttk.Frame(notebook)
+        notebook.add(frame3, text="Классы активов")
+        fig3, ax3 = plt.subplots(figsize=(10, 8))
+        fig3.patch.set_facecolor(COLORS['bg_main'])
+        ax3.set_facecolor(COLORS['bg_main'])
+        class_vals = [stocks_value, bonds_value, deposits_value]
+        class_labels = [
+            f"Акции\n{stocks_value:,.0f} ₽".replace(',', ' '),
+            f"Облигации\n{bonds_value:,.0f} ₽".replace(',', ' '),
+            f"Вклады\n{deposits_value:,.0f} ₽".replace(',', ' '),
+        ]
+        class_colors = [COLORS['accent'], COLORS['warning'], COLORS['info']]
+        if sum(class_vals) > 0:
+            ax3.pie([v if v > 0 else 0.001 for v in class_vals], labels=class_labels,
+                    colors=class_colors, autopct=lambda pct: f'{pct:.1f}%' if pct > 2 else '',
+                    startangle=90, textprops={'color': COLORS['text']})
+            ax3.set_title('Акции / облигации / вклады', color=COLORS['text'])
+        else:
+            ax3.text(0.5, 0.5, 'Нет данных', ha='center', va='center', transform=ax3.transAxes)
+        canvas3 = FigureCanvasTkAgg(fig3, frame3)
+        canvas3.draw()
+        canvas3.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        frame4 = ttk.Frame(notebook)
+        notebook.add(frame4, text="План и факт")
+        fig4, ax4 = plt.subplots(figsize=(12, 8))
+        fig4.patch.set_facecolor(COLORS['bg_main'])
+        ax4.set_facecolor(COLORS['bg_main'])
+        rows = []
+        if broker_total > 0:
+            for ticker, pos in list(stats['stock_positions'].items()) + list(stats['bond_positions'].items()):
+                if pos['qty'] <= 0:
+                    continue
+                value = pos['qty'] * self.current_prices.get(ticker, 0)
+                actual = value / broker_total * 100
+                target = float(self.target_shares.get(ticker, TARGET_SHARES.get(ticker, 0)) or 0)
+                rows.append((TICKER_NAMES.get(ticker, ticker), actual, target))
+            rows.sort(key=lambda r: r[1], reverse=True)
+            names = [r[0] for r in rows]
+            actuals = [r[1] for r in rows]
+            targets = [r[2] for r in rows]
+            y = np.arange(len(names))
+            ax4.barh(y + 0.18, targets, 0.35, label='Цель, %', color=COLORS['info'], alpha=0.7)
+            ax4.barh(y - 0.18, actuals, 0.35, label='Факт, %', color=COLORS['accent'], alpha=0.85)
+            ax4.set_yticks(y)
+            ax4.set_yticklabels(names, fontsize=8, color=COLORS['text'])
+            ax4.invert_yaxis()
+            ax4.set_xlabel('Доля брокерского портфеля, %', color=COLORS['text'])
+            ax4.set_title('Целевая доля и фактическая', color=COLORS['text'])
+            ax4.legend(loc='lower right')
+            ax4.tick_params(colors=COLORS['text'])
+            ax4.grid(True, axis='x', alpha=0.3)
+        else:
+            ax4.text(0.5, 0.5, 'Нет данных', ha='center', va='center', transform=ax4.transAxes)
+        fig4.tight_layout()
+        canvas4 = FigureCanvasTkAgg(fig4, frame4)
+        canvas4.draw()
+        canvas4.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
     def on_closing(self):
         self.update_thread_running = False
         self.root.destroy()
@@ -2827,7 +3109,7 @@ class InvestmentApp:
             self.payments_tree.delete(item)
 
         # Загружаем счета
-        accounts = get_deposit_accounts()
+        accounts = get_deposit_accounts(self.user_id)
         self.accounts_list = accounts
 
         total_in_deposits = 0
@@ -2844,7 +3126,7 @@ class InvestmentApp:
                                       tags=(tag,))
 
         # Загружаем выплаты
-        payments = get_deposit_payments()
+        payments = get_deposit_payments(self.user_id)
         for i, pay in enumerate(payments):
             tag = 'evenrow' if i % 2 == 0 else 'oddrow'
             account_name, date, amount = pay
@@ -2860,7 +3142,8 @@ class InvestmentApp:
         '''Сохранение нового вклада'''
         from DB.database import save_deposit_account
         if save_deposit_account(kwargs['name'], kwargs['acc_type'], kwargs['amount'],
-                                kwargs.get('rate'), kwargs.get('maturity'), kwargs.get('notes')):
+                                kwargs.get('rate'), kwargs.get('maturity'), kwargs.get('notes'),
+                                user_id=self.user_id):
             messagebox.showinfo("Успех", "Вклад добавлен")
             self.load_deposits_data()
         else:
@@ -2876,7 +3159,7 @@ class InvestmentApp:
     def save_deposit_payment(self, **kwargs):
         '''Сохранение выплаты'''
         from DB.database import save_deposit_payment
-        if save_deposit_payment(kwargs['account_id'], kwargs['date'], kwargs['amount']):
+        if save_deposit_payment(kwargs['account_id'], kwargs['date'], kwargs['amount'], user_id=self.user_id):
             messagebox.showinfo("Успех", "Выплата добавлена")
             self.load_deposits_data()
         else:
@@ -2914,7 +3197,7 @@ class InvestmentApp:
             for acc in self.accounts_list:
                 if acc[1] == account_name:
                     from DB.database import delete_deposit_account
-                    if delete_deposit_account(acc[0]):
+                    if delete_deposit_account(acc[0], user_id=self.user_id):
                         messagebox.showinfo("Успех", "Вклад удален")
                         self.load_deposits_data()
                     else:
