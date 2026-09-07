@@ -19,6 +19,7 @@ try:
                              get_dividends, get_coupons)
     from prices import get_all_prices
     from authorization.auth_dialogs import LoginDialog, SettingsDialog
+    from benchmarks import update_benchmarks_in_db, get_inflation_yoy, inflation_adjusted_deposits
 
     import pandas as pd
     from datetime import timedelta
@@ -38,77 +39,11 @@ try:
         AddTaxDeductionDialog,
         UpdateAccountDialog
     )
-    from authorization.auth_dialogs import LoginDialog
 
 except Exception:
     traceback.print_exception() 
     input()
     sys.exit(1)
-
-# Резервные данные по инфляции (ИПЦ, % к предыдущему месяцу)
-DEFAULT_INFLATION = {
-    '2023-01-01': 0.8, '2023-02-01': 0.5, '2023-03-01': 0.4, '2023-04-01': 0.4,
-    '2023-05-01': 0.3, '2023-06-01': 0.4, '2023-07-01': 0.6, '2023-08-01': 0.3,
-    '2023-09-01': 0.9, '2023-10-01': 0.8, '2023-11-01': 1.1, '2023-12-01': 0.7,
-    '2024-01-01': 0.9, '2024-02-01': 0.7, '2024-03-01': 0.4, '2024-04-01': 0.5,
-    '2024-05-01': 0.7, '2024-06-01': 0.6, '2024-07-01': 1.1, '2024-08-01': 0.2,
-    '2024-09-01': 0.5, '2024-10-01': 0.8, '2024-11-01': 1.4, '2024-12-01': 0.8,
-    '2025-01-01': 1.2, '2025-02-01': 0.8, '2025-03-01': 0.5, '2025-04-01': 0.5,
-    '2025-05-01': 0.4, '2025-06-01': 0.3, '2025-07-01': 0.5, '2025-08-01': 0.1,
-    '2025-09-01': 0.3, '2025-10-01': 0.6, '2025-11-01': 0.7, '2025-12-01': 0.8,
-}
-
-DEFAULT_REAL_ESTATE = {
-    '2023-06-30': 250000,
-    '2023-12-31': 265000,
-    '2024-06-30': 285000,
-    '2024-12-31': 310000,
-    '2025-06-30': 340000,
-    '2025-12-31': 375000,
-    '2026-03-31': 395000,
-}
-
-
-def get_inflation_data():
-    """Возвращает данные инфляции (берёт из DEFAULT_INFLATION)"""
-    return DEFAULT_INFLATION
-
-
-def get_real_estate_data():
-    """Возвращает данные по недвижимости (берёт из DEFAULT_REAL_ESTATE)"""
-    return DEFAULT_REAL_ESTATE
-
-
-def update_benchmarks_in_db():
-    """Обновляет бенчмарки в БД"""
-    from DB.db_config import create_connection
-
-    inflation = get_inflation_data()
-    real_estate = get_real_estate_data()
-
-    conn = create_connection()
-    if not conn:
-        return
-
-    cursor = conn.cursor()
-    cursor.execute("USE investment_portfolio")
-
-    for date_str, value in inflation.items():
-        cursor.execute("""
-            INSERT INTO benchmark_inflation (date, value) VALUES (%s, %s)
-            ON DUPLICATE KEY UPDATE value = VALUES(value)
-        """, (date_str, value))
-
-    for date_str, value in real_estate.items():
-        cursor.execute("""
-            INSERT INTO benchmark_real_estate (date, value) VALUES (%s, %s)
-            ON DUPLICATE KEY UPDATE value = VALUES(value)
-        """, (date_str, value))
-
-    conn.commit()
-    conn.close()
-    print("Бенчмарки обновлены в БД")
-
 
 def calculate_xirr(cashflows, dates):
     """
@@ -1974,18 +1909,13 @@ class InvestmentApp:
                            (start_date, end_date))
             deposits = cursor.fetchall()
 
-            # Вместо запроса к БД:
-            INFLATION_MONTHLY = get_inflation_data()
-
-            inflation_data = [(datetime.strptime(k, '%Y-%m-%d').date(), v)
-                              for k, v in INFLATION_MONTHLY.items()
-                              if start_date.date() <= datetime.strptime(k, '%Y-%m-%d').date() <= end_date.date()]
-
-            cursor.execute(
-                "SELECT date, value FROM benchmark_real_estate WHERE date >= %s AND date <= %s ORDER BY date",
-                (start_date.date(), end_date.date()))
-            real_estate_data = cursor.fetchall()
             conn.close()
+
+            try:
+                inflation_yoy = get_inflation_yoy(from_year=2023)
+            except Exception as e:
+                print(f"Не удалось загрузить инфляцию ЦБ: {e}")
+                inflation_yoy = {}
 
             deposits_dict = {pd.to_datetime(d[0]): float(d[1]) for d in deposits}
             history_df['date'] = pd.to_datetime(history_df['date'])
@@ -2021,65 +1951,13 @@ class InvestmentApp:
             else:
                 merged['index_value'] = merged['value']
 
-            # 6. График инфляции (покупательная способность внесенных денег)
-            if inflation_data:
-                inf_df = pd.DataFrame(inflation_data, columns=['date', 'value'])
-                inf_df['date'] = pd.to_datetime(inf_df['date'])
-                inf_df['value'] = inf_df['value'].astype(float)
-
-                # Накопленная инфляция (фактор обесценивания)
-                inf_df['devaluation_factor'] = (1 + inf_df['value'] / 100).cumprod()
-
-                # Для каждой даты считаем реальную стоимость внесенных денег
-                merged['real_value_of_deposits'] = 0.0
-
-                # Суммируем все пополнения с учетом инфляции
-                for date, amount in deposits_dict.items():
-                    # Находим фактор инфляции на эту дату
-                    mask = inf_df['date'] >= date
-                    if mask.any():
-                        factor = inf_df.loc[mask.idxmax(), 'devaluation_factor'] if mask.any() else 1.0
-                    else:
-                        factor = inf_df['devaluation_factor'].iloc[-1]
-
-                    # Реальная стоимость этих денег сегодня
-                    real_value = amount / factor
-
-                    # Добавляем ко всем датам после пополнения
-                    merged.loc[merged['date'] >= date, 'real_value_of_deposits'] += real_value
-
-                merged['inflated_value'] = merged['real_value_of_deposits'] * inf_df['devaluation_factor'].iloc[-1]
+            # Пополнения, проиндексированные официальной инфляцией ЦБ (г/г → месячный эквивалент)
+            if inflation_yoy and deposits_dict:
+                merged['inflated_value'] = inflation_adjusted_deposits(
+                    merged['date'], deposits_dict, inflation_yoy
+                )
             else:
-                merged['inflated_value'] = merged['value']
-
-            # 7. График недвижимости
-            if real_estate_data:
-                re_df = pd.DataFrame(real_estate_data, columns=['date', 'value'])
-                re_df['date'] = pd.to_datetime(re_df['date'])
-                # Преобразуем Decimal в float
-                re_df['value'] = re_df['value'].astype(float)
-                re_df = re_df.sort_values('date')
-
-                from scipy.interpolate import interp1d
-                f = interp1d(re_df['date'].map(datetime.toordinal), re_df['value'],
-                             kind='linear', fill_value='extrapolate')
-                merged['re_price'] = f(merged['date'].map(datetime.toordinal)).astype(float)
-
-                first_re_price = float(merged['re_price'].iloc[0])
-                re_units = float(history_df['value'].iloc[0]) / first_re_price if first_re_price > 0 else 0
-
-                re_values = []
-                for _, row in merged.iterrows():
-                    price = float(row['re_price'])
-                    if pd.notna(price) and price > 0:
-                        if row['date'] in deposits_dict:
-                            re_units += float(deposits_dict[row['date']]) / price
-                        re_values.append(re_units * price)
-                    else:
-                        re_values.append(re_values[-1] if re_values else 0)
-                merged['re_value'] = re_values
-            else:
-                merged['re_value'] = merged['value']
+                merged['inflated_value'] = None
 
             self.root.after(0, lambda: self.progress_bar.stop())
             self.root.after(0, lambda: self.progress_label.config(text="Готово"))
@@ -2104,15 +1982,11 @@ class InvestmentApp:
                 self.history_ax.plot(index_df['date'], index_df['index_value'],
                                      color=COLORS['warning'], linewidth=2, label='Индекс MCFTR')
 
-            # Инфляция
-            if 'inflated_value' in index_df.columns:
+            # Инфляция (взносы, проиндексированные рядом ЦБ РФ)
+            if 'inflated_value' in index_df.columns and index_df['inflated_value'].notna().any():
                 self.history_ax.plot(index_df['date'], index_df['inflated_value'],
-                                     color='#ef5350', linewidth=1.5, linestyle=':', label='Инфляция')
-
-            # Недвижимость
-            if 're_value' in index_df.columns:
-                self.history_ax.plot(index_df['date'], index_df['re_value'],
-                                     color='#8d6e63', linewidth=2, linestyle='--', label='Недвижимость')
+                                     color='#ef5350', linewidth=1.5, linestyle=':',
+                                     label='Инфляция (ЦБ РФ, г/г)')
 
             self.history_ax.set_title('Динамика стоимости портфеля vs Индекс МосБиржи', color=COLORS['text'],
                                       fontsize=14)
