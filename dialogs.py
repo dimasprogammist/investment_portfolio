@@ -240,7 +240,7 @@ class AddTradeDialog(StyledDialog):
 
         frame_price = tk.Frame(self.main_frame, bg=COLORS["bg_main"])
         frame_price.pack(fill=tk.X, pady=(0, 5))
-        price_label = "Цена (%):   " if self.sec_type == "bond" else "Цена (₽):"
+        price_label = "Цена (%):   " if self.sec_type == "bond" else "Цена 1 шт.(₽):"
         tk.Label(
             frame_price,
             text=price_label,
@@ -1038,7 +1038,7 @@ class AddDepositPaymentDialog(StyledDialog):
 
 class UpdateAccountDialog(StyledDialog):
     def __init__(self, parent, accounts, callback):
-        super().__init__(parent, "Обновить сумму", 300, 200)
+        super().__init__(parent, "Обновить сумму", 245, 150)
         self.accounts = accounts
         self.accounts_dict = {f"{acc[1]} ({acc[2]})": acc for acc in accounts}
         self.callback = callback

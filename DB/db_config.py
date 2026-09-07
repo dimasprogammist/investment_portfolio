@@ -3,6 +3,7 @@ import base64
 import hashlib
 import secrets
 import sys
+import datetime
 
 import mysql.connector
 from mysql.connector import Error
@@ -78,7 +79,9 @@ def init_db():
     1. Выполняет init_db.sql (создание схемы)
     2. Применяет миграции (ALTER TABLE для старых таблиц)
     3. Создаёт пользователя admin
+    4. Обновляет список доступных активов (раз в неделю)
     """
+    import os
     conn = create_connection()
     if not conn:
         print("Не удалось подключиться к MySQL.")
@@ -95,7 +98,6 @@ def init_db():
     try:
         with open(sql_path, 'r', encoding='utf-8') as f:
             sql = f.read()
-            # Разбиваем по точке с запятой
             statements = [s.strip() for s in sql.split(';') if s.strip()]
             for statement in statements:
                 try:
@@ -119,6 +121,29 @@ def init_db():
     cursor.close()
     conn.close()
     print("База данных успешно инициализирована")
+
+    # 4. Обновляем список доступных активов (раз в неделю)
+    import os
+    asset_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'last_asset_update.txt')
+    need_update = True
+    if os.path.exists(asset_file):
+        try:
+            with open(asset_file) as f:
+                last_update = datetime.fromisoformat(f.read().strip())
+                need_update = (datetime.now() - last_update).days > 7
+        except:
+            pass
+
+    if need_update:
+        print("Обновление списка активов с MOEX...")
+        from prices import update_available_assets
+        try:
+            update_available_assets()
+            with open(asset_file, 'w') as f:
+                f.write(datetime.now().isoformat())
+        except Exception as e:
+            print(f"Не удалось обновить список активов: {e}")
+
     return True
 
 

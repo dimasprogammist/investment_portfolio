@@ -182,8 +182,76 @@ CREATE TABLE IF NOT EXISTS benchmark_inflation (
     source VARCHAR(100) DEFAULT 'Росстат'
 );
 
+CREATE TABLE IF NOT EXISTS available_assets (
+    ticker VARCHAR(20) NOT NULL,
+    name VARCHAR(200),
+    security_type VARCHAR(10) NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (ticker)
+);
 
+CREATE TABLE investment_portfolio.stock_fundamentals (
+    ticker VARCHAR(20) PRIMARY KEY,
 
+    -- Рыночная стоимость
+    market_cap DECIMAL(15,2),
+    ev DECIMAL(15,2),
+
+    -- Финансовые показатели
+    revenue DECIMAL(15,2),
+    net_income DECIMAL(15,2),
+    ebitda DECIMAL(15,2),
+    ebit DECIMAL(15,2),
+    fcf DECIMAL(15,2),
+    capex DECIMAL(15,2),
+    total_debt DECIMAL(15,2),
+    cash_equivalents DECIMAL(15,2),
+
+    -- Мультипликаторы стоимости
+    pe DECIMAL(10,2),
+    pb DECIMAL(10,2),
+    ps DECIMAL(10,2),
+    pcf DECIMAL(10,2),
+    pfcf DECIMAL(10,2),
+    ev_s DECIMAL(10,2),
+    evebitda DECIMAL(10,2),
+    evebit DECIMAL(10,2),
+
+    -- Долговые мультипликаторы
+    de DECIMAL(10,2),
+    debt_ebitda DECIMAL(10,2),
+    net_debt_ebitda DECIMAL(10,2),
+    capex_revenue DECIMAL(10,2),
+
+    -- Рентабельность
+    roe DECIMAL(10,2),
+    roa DECIMAL(10,2),
+    roic DECIMAL(10,2),
+    roce DECIMAL(10,2),
+    net_margin DECIMAL(10,2),
+    operating_margin DECIMAL(10,2),
+    ebitda_margin DECIMAL(10,2),
+
+    -- Ликвидность
+    current_ratio DECIMAL(10,2),
+
+    -- Служебные
+    report_date VARCHAR(50),
+    company_type VARCHAR(20) DEFAULT 'industrial',
+    updated_at DATE,
+
+    -- Банковские специфичные
+    net_operating_income DECIMAL(15,2)
+);
+
+ALTER TABLE investment_portfolio.stock_fundamentals
+ADD COLUMN msfo_history TEXT;
+
+ALTER TABLE investment_portfolio.stock_fundamentals
+ADD COLUMN msfo_history TEXT;
+
+ALTER TABLE investment_portfolio.stock_fundamentals
+ADD COLUMN dividend_yield DECIMAL(10,2);
 
 -- Данные по инфляции (ИПЦ, % год к году)
 INSERT IGNORE INTO benchmark_inflation (date, value) VALUES

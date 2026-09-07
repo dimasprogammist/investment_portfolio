@@ -55,14 +55,14 @@ TICKER_COLORS = {
     'MDMG': '#fed886', 'OZON': '#c7b3ff', 'ASTR': '#78877a', 'ELMT': '#fed886',
     'MAGN': '#1e5df1', 'NLMK': '#1e5df1', 'AQUA': '#78877a', 'FLOT': '#1e5df1',
     'POSI': '#da0b0b', 'PHOR': '#43df56', 'PLZL': '#ffd500', 'NMTP': '#1e5df1',
+    'PRMD': '#cf92c4',
 }
 
 # ==================== ЦЕЛЕВЫЕ ДОЛИ ====================
 TARGET_SHARES_STOCKS = {
-    'SBER': 8.24, 'ROSN': 7.44, 'YDEX': 6.64, 'T': 5.44, 'TATN': 5.04, 'NVTK': 5.04,
-    'GMKN': 4.24, 'X5': 4.24, 'MDMG': 4.24, 'OZON': 3.04, 'ASTR': 2.64, 'ELMT': 3.04,
-    'MAGN': 2.64, 'NLMK': 2.64, 'AQUA': 2.64, 'FLOT': 2.64, 'POSI': 2.64, 'PHOR': 2.64,
-    'PLZL': 2.64, 'NMTP': 2.24,
+    'SBER': 8.48, 'ROSN': 6.40, 'YDEX': 6.80, 'T': 5.60, 'TATN': 4.40, 'NVTK': 4.40, 'GMKN': 4.24,
+    'X5': 4.24, 'MDMG': 4.24, 'OZON': 3.36, 'ASTR': 2.40, 'ELMT': 2.64, 'AQUA': 2.40, 'PHOR': 2.80,
+    'PLZL': 2.80, 'MAGN': 2.40, 'NLMK': 2.40, 'FLOT': 2.40, 'POSI': 2.40,  'NMTP': 2.80, 'PRMD': 2.40,
 }
 
 TARGET_SHARES_BONDS = {
@@ -77,7 +77,7 @@ TARGET_SHARES = {**TARGET_SHARES_STOCKS, **TARGET_SHARES_BONDS}
 # ==================== СПИСКИ ТИКЕРОВ ====================
 STOCKS = ['SBER', 'ROSN', 'YDEX', 'T', 'TATN', 'NVTK', 'GMKN', 'X5',
           'MDMG', 'OZON', 'ASTR', 'ELMT', 'MAGN', 'NLMK', 'AQUA', 'FLOT',
-          'POSI', 'PHOR', 'PLZL', 'NMTP']
+          'POSI', 'PHOR', 'PLZL', 'NMTP', 'PRMD']
 
 BONDS = ['SU26234RMFS3', 'SU26248RMFS3', 'SU26246RMFS7', 'SU26242RMFS6',
          'RU000A10ASC6', 'RU000A10AUE8', 'RU000A107W48', 'RU000A10BFG2',
@@ -107,26 +107,27 @@ TICKER_NAMES = {
     'OZON': 'Озон',
     'ASTR': 'Астра',
     'ELMT': 'Элемент',
-    'MAGN': 'ММК',
-    'NLMK': 'НЛМК',
     'AQUA': 'Инарктика',
-    'FLOT': 'Совкомфлот',
-    'POSI': 'Позитив',
     'PHOR': 'ФосАгро',
     'PLZL': 'Полюс',
+    'MAGN': 'ММК',
+    'NLMK': 'НЛМК',
+    'FLOT': 'Совкомфлот',
+    'POSI': 'Позитив',
     'NMTP': 'НМТП',
+    'PRMD': 'Промомед',
     # Облигации
     'SU26234RMFS3': 'ОФЗ 26234',
     'SU26248RMFS3': 'ОФЗ 26248',
     'SU26246RMFS7': 'ОФЗ 26246',
     'SU26242RMFS6': 'ОФЗ 26242',
     'RU000A10ASC6': 'Европлан 1P09',
-    'RU000A10AUE8': 'РКД 001P-36R',
+    'RU000A10AUE8': 'РЖД 001P-36R',
     'RU000A107W48': 'Инаркт 2P1',
     'RU000A10BFG2': 'Росатом 001H-05',
     'RU000A10AXW4': 'Сибур 0001P-03',
     'RU000A104XW2': 'Сибур 0001P-01',
-    'RU000A10CDZ5': 'РКД 001P-45R',
+    'RU000A10CDZ5': 'РЖД 001P-45R',
 }
 
 # Тикер индекса для кэширования

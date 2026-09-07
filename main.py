@@ -10,6 +10,7 @@ try:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     import threading
     import time
+    from scipy.optimize import newton
     from DB.db_config import init_db
     from config import COLORS, TICKER_COLORS, TARGET_SHARES, TARGET_SHARES_STOCKS, TARGET_SHARES_BONDS, STOCKS, BONDS, \
         TICKER_NAMES, CURRENCY_BONDS
@@ -40,7 +41,7 @@ try:
     from authorization.auth_dialogs import LoginDialog
 
 except Exception:
-    traceback.print_exception()
+    traceback.print_exception() 
     input()
     sys.exit(1)
 
@@ -108,12 +109,63 @@ def update_benchmarks_in_db():
     conn.close()
     print("Бенчмарки обновлены в БД")
 
+
+def calculate_xirr(cashflows, dates):
+    """
+    Расчет среднегодовой доходности (XIRR).
+    cashflows — список сумм (пополнения с минусом, выводы с плюсом)
+    dates — список дат
+    """
+    if len(cashflows) < 2 or len(dates) < 2:
+        return 0
+
+    # Переводим даты в дни от первой даты
+    d0 = dates[0]
+    days = [(d - d0).days for d in dates]
+
+    def npv(rate):
+        total = 0
+        for cf, day in zip(cashflows, days):
+            total += cf * (1 + rate) ** (-day / 365.0)
+        return total
+
+    try:
+        result = newton(npv, 0.1, maxiter=100)
+        return result * 100
+    except:
+        return 0
+
+
+# Всплывающая подсказка для заголовков таблиц
+_tooltip_window = None
+
+
+def show_tooltip_window(widget, text, x, y):
+    """Показывает всплывающую подсказку"""
+    global _tooltip_window
+    hide_tooltip()
+    _tooltip_window = tk.Toplevel(widget)
+    _tooltip_window.wm_overrideredirect(True)
+    _tooltip_window.wm_geometry(f"+{x+10}+{y+10}")
+    label = tk.Label(_tooltip_window, text=text, background="#ffffcc",
+                     relief="solid", borderwidth=1, font=("Calibri", 9),
+                     wraplength=300, padx=5, pady=3)
+    label.pack()
+
+def hide_tooltip(event=None):
+    """Скрывает подсказку"""
+    global _tooltip_window
+    if _tooltip_window:
+        _tooltip_window.destroy()
+        _tooltip_window = None
+
+
 class InvestmentApp:
     def __init__(self, root, user_id: int):
         self.root = root
         self.user_id = user_id
         self.root.title("Инвестиционный учёт")
-        self.root.geometry("1500x765")
+        self.root.geometry("1500x800")
         self.root.configure(bg=COLORS['bg_header'])
 
         self.stocks = STOCKS
@@ -123,6 +175,7 @@ class InvestmentApp:
         self.update_thread_running = True
         self.auto_update_enabled = True
 
+        self.load_user_assets()
         self.create_widgets()
         import os
         benchmark_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'last_benchmark_update.txt')
@@ -145,6 +198,160 @@ class InvestmentApp:
 
         self.refresh_prices()
         self.start_auto_update()
+        self.fair_prices = {}
+        self.load_fair_prices()
+
+    def load_user_assets(self):
+        """Загружает выбранные активы из БД"""
+        from DB.db_config import create_connection
+        conn = create_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("USE investment_portfolio")
+            cursor.execute("SELECT ticker, security_type FROM user_assets WHERE user_id = %s AND is_active = TRUE",
+                           (self.user_id,))
+            user_assets = cursor.fetchall()
+            conn.close()
+
+            stocks_from_db = [t for t, s in user_assets if s == 'stock']
+            bonds_from_db = [t for t, s in user_assets if s == 'bond']
+
+            if stocks_from_db:
+                self.stocks = stocks_from_db
+            # Если нет в БД — оставляем из конфига (STOCKS)
+
+            if bonds_from_db:
+                self.bonds = bonds_from_db
+            # Если нет в БД — оставляем из конфига (BONDS)
+
+    def show_multiplier_chart(self, ticker, company_name, indicator_name, full_years, ltm_years, year_values,
+                              higher_better):
+        """Показывает столбчатую диаграмму мультипликатора по годам"""
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+        # Закрываем все предыдущие фигуры чтобы не было наложений
+        plt.close('all')
+
+        # Собираем данные
+        years_labels = full_years + ltm_years
+        values = []
+        for year in years_labels:
+            val = year_values.get(year)
+            values.append(val if val is not None else 0)
+
+        # Считаем среднее по полным годам
+        full_vals = [v for v in values[:len(full_years)] if v is not None and v != 0]
+        avg_val = sum(full_vals) / len(full_vals) if full_vals else 0
+
+        # Определяем цвета столбцов
+        colors = []
+        for i, val in enumerate(values):
+            if val == 0:
+                colors.append('#bdbdbd')
+            elif i < len(full_years):
+                if indicator_name in higher_better:
+                    colors.append('#4caf50' if val > avg_val else '#f44336')
+                else:
+                    colors.append('#4caf50' if val < avg_val else '#f44336')
+            else:
+                colors.append('#2196f3')
+
+        # Создаём окно
+        chart_win = tk.Toplevel(self.root)
+        chart_win.title(f"{company_name} ({ticker}) — {indicator_name}")
+        chart_win.geometry("700x500")
+        chart_win.transient(self.root)
+        chart_win.grab_set()
+        chart_win.configure(bg=COLORS['bg_main'])
+
+        tk.Label(chart_win, text=f"{indicator_name} по годам", font=("Calibri", 14, "bold"),
+                 bg=COLORS['bg_main'], fg=COLORS['accent']).pack(pady=(15, 5))
+
+        # Создаём НОВУЮ фигуру
+        fig, ax = plt.subplots(figsize=(8, 5))
+        fig.patch.set_facecolor(COLORS['bg_main'])
+        ax.set_facecolor(COLORS['bg_main'])
+
+        x = range(len(years_labels))
+        bars = ax.bar(x, values, color=colors, width=0.6, edgecolor='white', linewidth=0.5)
+
+        # Горизонтальная линия среднего
+        ax.axhline(y=avg_val, color='#ff9800', linestyle='--', linewidth=2,
+                   label=f'Среднее: {avg_val:.2f}')
+
+        # Подписи значений над столбцами
+        for i, (bar, val) in enumerate(zip(bars, values)):
+            if val != 0:
+                ax.text(bar.get_x() + bar.get_width() / 2., bar.get_height() + (max(values) * 0.02),
+                        f'{val:.2f}', ha='center', va='bottom', fontsize=9, color=COLORS['text'])
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(years_labels, fontsize=10, color=COLORS['text'])
+        ax.tick_params(axis='y', colors=COLORS['text'])
+        ax.set_ylabel(indicator_name, color=COLORS['text'], fontsize=11)
+        ax.legend(loc='upper right', fontsize=9)
+
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color(COLORS['text_secondary'])
+        ax.spines['bottom'].set_color(COLORS['text_secondary'])
+        ax.grid(axis='y', alpha=0.3, color=COLORS['text_secondary'])
+
+        fig.tight_layout()
+
+        canvas = FigureCanvasTkAgg(fig, chart_win)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        tk.Button(chart_win, text="Закрыть", command=chart_win.destroy,
+                  bg=COLORS['bg_header'], fg=COLORS['text'], font=("Calibri", 10),
+                  relief="flat", padx=25, pady=8, cursor="hand2").pack(pady=(0, 15))
+
+    def load_fair_prices(self):
+        """Загружает справедливые цены из файла или рассчитывает"""
+        import os
+        import json
+
+        fair_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fair_prices.json')
+        need_calc = True
+
+        if os.path.exists(fair_file):
+            try:
+                with open(fair_file, 'r') as f:
+                    data = json.load(f)
+                    # Проверяем свежесть (не старше 24 часов)
+                    from datetime import datetime
+                    if datetime.now().timestamp() - data.get('_updated', 0) < 86400:
+                        self.fair_prices = data
+                        need_calc = False
+            except:
+                pass
+
+        if need_calc:
+            self.calculate_fair_prices()
+
+    def calculate_fair_prices(self):
+        """Рассчитывает справедливые цены в фоновом потоке"""
+        self.status_label.config(text="Расчёт справедливых цен...")
+        self.root.update()
+
+        def run():
+            from fair_price import calculate_all_fair_prices
+            results = calculate_all_fair_prices(self.stocks)
+            results['_updated'] = datetime.now().timestamp()
+
+            import json
+            import os
+            fair_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fair_prices.json')
+            with open(fair_file, 'w') as f:
+                json.dump(results, f)
+
+            self.fair_prices = results
+            self.root.after(0, lambda: self.status_label.config(text="Справедливые цены обновлены!"))
+            self.root.after(0, self.update_all_tables)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def switch_user(self):
         """Смена пользователя: вход под другим логином и перезагрузка данных."""
@@ -161,7 +368,8 @@ class InvestmentApp:
         SettingsDialog(
             self.root,
             current_theme_callback=self.apply_theme,
-            switch_user_callback=self.switch_user
+            switch_user_callback=self.switch_user,
+            user_id=self.user_id
         )
 
     def apply_theme(self, theme):
@@ -266,18 +474,103 @@ class InvestmentApp:
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-        self.cashflow_figure = Figure(figsize=(14, 8), dpi=100, facecolor=COLORS['bg_main'])
+        self.cashflow_figure = Figure(figsize=(16, 9), dpi=100, facecolor=COLORS['bg_main'])
         self.cashflow_ax = self.cashflow_figure.add_subplot(111)
         self.cashflow_ax.set_facecolor(COLORS['table_odd'])
         self.cashflow_ax.tick_params(colors=COLORS['text'])
 
-        self.cashflow_figure.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.15)
+        self.cashflow_figure.subplots_adjust(left=0.08, right=0.98, top=0.9, bottom=0.12)
 
         self.cashflow_canvas = FigureCanvasTkAgg(self.cashflow_figure, graph_frame)
         self.cashflow_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # Сразу строим график для текущего года
         self.plot_cashflow()
+
+    def create_achievements_tab(self):
+        """Вкладка с достижениями"""
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="🏆 Достижения")
+
+        bg_frame = tk.Frame(frame, bg=COLORS['bg_main'])
+        bg_frame.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(bg_frame, bg=COLORS['bg_main'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(bg_frame, orient=tk.VERTICAL, command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg=COLORS['bg_main'])
+
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        style = ttk.Style()
+        style.configure("green.Horizontal.TProgressbar",
+                        troughcolor=COLORS['bg_header'],
+                        background=COLORS['accent'],
+                        bordercolor=COLORS['bg_header'],
+                        lightcolor=COLORS['accent'],
+                        darkcolor=COLORS['accent'])
+
+        from achievements import get_all_achievements_with_progress
+        achievements_data = get_all_achievements_with_progress(self.user_id)
+
+        groups = {}
+        for category, ach, value in achievements_data:
+            if category not in groups:
+                groups[category] = []
+            groups[category].append((ach, value))
+
+        row = 0
+        for group_name, items in groups.items():
+            tk.Label(scroll_frame, text=group_name, font=("Calibri", 14, "bold"),
+                     bg=COLORS['bg_main'], fg=COLORS['accent']).grid(
+                row=row, column=0, columnspan=5, padx=15, pady=(15, 5), sticky="w")
+            row += 1
+
+            col = 0
+            for ach, value in items:
+                progress_data = ach.get_progress(value)
+                bg_color = '#e8f5e9' if progress_data['completed_all'] else COLORS['bg_card']
+                fg_color = COLORS['text_secondary'] if progress_data['completed_all'] else COLORS['text']
+
+                card = tk.Frame(scroll_frame, bg=bg_color, relief=tk.FLAT, bd=1, padx=10, pady=8)
+                card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+
+                tk.Label(card, text=f"{ach.icon} {ach.name}", font=("Calibri", 10, "bold"),
+                         bg=bg_color, fg=fg_color).pack(anchor="w")
+
+                bar = ttk.Progressbar(card, mode='determinate', length=258, maximum=100,
+                                      value=progress_data['progress'],
+                                      style="green.Horizontal.TProgressbar")
+                bar.pack(fill=tk.X, pady=(5, 3))
+
+                if progress_data['completed_all']:
+                    value_text = f"✅ {progress_data['next_label']}"
+                else:
+                    value_text = f"{progress_data['value']:,.0f} из {progress_data['next_label']}".replace(',', ' ')
+                tk.Label(card, text=value_text, font=("Calibri", 8), bg=bg_color, fg=fg_color).pack(anchor="w")
+                tk.Label(card,
+                         text=f"{progress_data['progress']}% | {progress_data['achieved_tiers']}/{progress_data['tiers_count']} ур.",
+                         font=("Calibri", 7), bg=bg_color, fg=COLORS['text_light']).pack(anchor="w")
+
+                col += 1
+                if col == 5:
+                    col = 0
+                    row += 1
+
+            if col > 0:
+                row += 1
+
+            for c in range(5):
+                scroll_frame.grid_columnconfigure(c, weight=1, uniform="col")
 
     def plot_cashflow(self):
         """Построение графика денежного потока за выбранный год"""
@@ -369,6 +662,7 @@ class InvestmentApp:
         dividends = []  # Дивиденды
         coupons = []  # Купоны
         purchases = []  # Покупки
+        div_coupon_sum = []
         total_inflow = []  # Сумма всего
 
         for m in range(1, 13):
@@ -383,6 +677,7 @@ class InvestmentApp:
             dividends.append(div)
             coupons.append(coup)
             purchases.append(data['purchases'])
+            div_coupon_sum.append(div + coup)
             total_inflow.append(dep_tax + div + coup)
 
         # Очищаем и рисуем график
@@ -390,23 +685,25 @@ class InvestmentApp:
         self.cashflow_ax.set_facecolor(COLORS['table_odd'])
 
         x = range(len(months))
-        width = 0.2
+        width = 0.16
 
         # Настройка цветов столбцов
-        COLOR_DEPOSITS = COLORS['info']  # Синий для пополнений
-        COLOR_DIVIDENDS = '#4caf50'  # Зеленый для дивидендов
-        COLOR_COUPONS = '#ff9800'  # Оранжевый для купонов
-        COLOR_TOTAL = COLORS['accent']  # Голубой для общего притока
-        COLOR_PURCHASES = COLORS['danger']  # Красный для покупок
+        COLOR_DEPOSITS = '#719ef9'  # Синий для пополнений
+        COLOR_DIVIDENDS = '#f73b4e'  # Зеленый для дивидендов
+        COLOR_COUPONS = '#e0c200'  # Оранжевый для купонов
+        COLOR_TOTAL = '#d67200'  # Голубой для общего притока
+        COLOR_PURCHASES = '#45daf7'  # Красный для покупок
 
         # Группированные столбцы
-        bars1 = self.cashflow_ax.bar([i - width * 1.5 for i in x], deposits_tax, width,
+        bars1 = self.cashflow_ax.bar([i - width * 2.0 for i in x], deposits_tax, width,
                                      label='Пополнения + вычеты', color=COLOR_DEPOSITS, alpha=0.8)
-        bars2 = self.cashflow_ax.bar([i - width * 0.5 for i in x], dividends, width,
+        bars2 = self.cashflow_ax.bar([i - width * 1.0 for i in x], dividends, width,
                                      label='Дивиденды', color=COLOR_DIVIDENDS, alpha=0.7)
-        bars3 = self.cashflow_ax.bar([i + width * 0.5 for i in x], coupons, width,
+        bars3 = self.cashflow_ax.bar([i + width * 0.0 for i in x], coupons, width,
                                      label='Купоны', color=COLOR_COUPONS, alpha=0.7)
-        bars4 = self.cashflow_ax.bar([i + width * 1.5 for i in x], total_inflow, width,
+        bars5 = self.cashflow_ax.bar([i + width * 1.0 for i in x], div_coupon_sum, width,
+                                     label='Дивиденды + Купоны', color='#ab47bc', alpha=0.7)
+        bars4 = self.cashflow_ax.bar([i + width * 2.0 for i in x], total_inflow, width,
                                      label='Общий приток', color=COLOR_TOTAL, alpha=0.6)
 
         # Линия покупок
@@ -414,44 +711,40 @@ class InvestmentApp:
                               markersize=6, label='Покупки')
 
         # Подписи суммы на столбцах + Расчет отступов для подписей
-        all_values = deposits_tax + dividends + coupons + total_inflow + purchases
+        all_values = deposits_tax + dividends + coupons + div_coupon_sum + total_inflow + purchases
         max_val = max(all_values) if all_values else 100000
         offset = max_val * 0.03
 
         for i in x:
-            # Пополнения + вычеты
             if deposits_tax[i] > 0:
-                self.cashflow_ax.text(i - width * 1.5, deposits_tax[i] + offset,
+                self.cashflow_ax.text(i - width * 2, deposits_tax[i] + offset,
                                       f'{deposits_tax[i]:,.0f}'.replace(',', ' '),
-                                      ha='center', va='bottom', fontsize=6,
+                                      ha='center', va='bottom', fontsize=7,
                                       color=COLOR_DEPOSITS, rotation=90)
-
-            # Дивиденды
             if dividends[i] > 0:
-                self.cashflow_ax.text(i - width * 0.5, dividends[i] + offset,
+                self.cashflow_ax.text(i - width * 1, dividends[i] + offset,
                                       f'{dividends[i]:,.0f}'.replace(',', ' '),
-                                      ha='center', va='bottom', fontsize=6,
+                                      ha='center', va='bottom', fontsize=7,
                                       color=COLOR_DIVIDENDS, rotation=90)
-
-            # Купоны
             if coupons[i] > 0:
-                self.cashflow_ax.text(i + width * 0.5, coupons[i] + offset,
+                self.cashflow_ax.text(i + width * 0.0, coupons[i] + offset,
                                       f'{coupons[i]:,.0f}'.replace(',', ' '),
-                                      ha='center', va='bottom', fontsize=6,
+                                      ha='center', va='bottom', fontsize=7,
                                       color=COLOR_COUPONS, rotation=90)
-
-            # Общий приток
+            if div_coupon_sum[i] > 0:
+                self.cashflow_ax.text(i + width * 1, div_coupon_sum[i] + offset,
+                                      f'{div_coupon_sum[i]:,.0f}'.replace(',', ' '),
+                                      ha='center', va='bottom', fontsize=7,
+                                      color='#ab47bc', rotation=90)
             if total_inflow[i] > 0:
-                self.cashflow_ax.text(i + width * 1.5, total_inflow[i] + offset,
+                self.cashflow_ax.text(i + width * 2, total_inflow[i] + offset,
                                       f'{total_inflow[i]:,.0f}'.replace(',', ' '),
-                                      ha='center', va='bottom', fontsize=6,
+                                      ha='center', va='bottom', fontsize=7,
                                       color=COLOR_TOTAL, rotation=90)
-
-            # Покупки
             if purchases[i] > 0:
                 self.cashflow_ax.text(i, purchases[i] + offset,
                                       f'{purchases[i]:,.0f}'.replace(',', ' '),
-                                      ha='center', va='bottom', fontsize=7,
+                                      ha='center', va='bottom', fontsize=8,
                                       color=COLOR_PURCHASES, rotation=90, fontweight='bold')
 
             for i in range(len(months) + 1):
@@ -460,9 +753,14 @@ class InvestmentApp:
 
         # Настройка осей
         self.cashflow_ax.set_xticks(x)
-        self.cashflow_ax.set_xticklabels(months, rotation=0, ha='center')
-        self.cashflow_ax.set_ylabel('Сумма (₽)', color=COLORS['text'], fontsize=11)
-        self.cashflow_ax.set_title(f'Денежный поток за {year} год', color=COLORS['text'], fontsize=14, pad=20)
+        self.cashflow_ax.set_xticklabels(months, rotation=0, ha='center', fontsize=8)
+        self.cashflow_ax.set_ylabel('Сумма (₽)', color=COLORS['text'], fontsize=8)
+        self.cashflow_ax.set_title(f'Денежный поток за {year} год', color=COLORS['text'],
+                                   fontsize=12, pad=10)
+        self.cashflow_ax.tick_params(axis='y', labelsize=8)
+        self.cashflow_ax.tick_params(axis='x', labelsize=8)
+
+        self.cashflow_ax.set_xlim(-0.5, 11.5)
 
         # Увеличиваем верхнюю границу оси Y
         all_values = deposits_tax + dividends + coupons + total_inflow + purchases
@@ -499,17 +797,25 @@ class InvestmentApp:
             cursor.execute("USE investment_portfolio")
             cursor.execute(f"SELECT SUM(amount) FROM dividends WHERE YEAR(date) = {year - 1}")
             prev_div = float(cursor.fetchone()[0] or 0)
-            conn.close()
 
-            if prev_div > 0:
-                div_growth = ((total_div - prev_div) / prev_div * 100)
-                growth_text = f'Рост дивидендов {year}/{year - 1}: {div_growth:+.2f}%'
+            if prev_div >= 0:
+                # ... новый код вместо старого ...
+                cursor.execute(f"SELECT SUM(amount) FROM coupons WHERE YEAR(date) = {year - 1}")
+                prev_coupons = float(cursor.fetchone()[0] or 0)
+                prev_total = prev_div + prev_coupons
+
+                current_total = total_div + total_coupon
+                share_of_last = (current_total / prev_total * 100) if prev_total > 0 else 0
+
+                growth_text = f'Отношение дивидендов {year}/{year - 1} = {share_of_last:.2f}%'
+
                 self.cashflow_ax.text(0.98, 0.95, growth_text, transform=self.cashflow_ax.transAxes,
                                       fontsize=8, verticalalignment='top', horizontalalignment='right',
                                       bbox=dict(boxstyle='round', facecolor=COLORS['warning'], alpha=0.3),
                                       color=COLORS['text'])
+            conn.close()
 
-        self.cashflow_ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=8)
+        self.cashflow_ax.legend(loc='upper left', bbox_to_anchor=(1.0, 1.0105), fontsize=8)
         self.cashflow_ax.grid(True, alpha=0.3, axis='y')
 
         # Убираем верхнюю и правую границы
@@ -651,6 +957,14 @@ class InvestmentApp:
                   background=[("selected", COLORS['accent'])],
                   foreground=[("selected", "white")],
                   padding=[("selected", [25, 6])])
+        style.configure(
+            "green.Horizontal.TProgressbar",
+            troughcolor=COLORS['bg_header'],
+            background=COLORS['accent'],
+            bordercolor=COLORS['bg_header'],
+            lightcolor=COLORS['accent'],
+            darkcolor=COLORS['accent'],
+        )
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -664,6 +978,8 @@ class InvestmentApp:
         self.create_deposits_accounts_tab()  # ← Вкладка "Вклады"
         self.create_history_tab()   # ← Вкладка "История портфеля"
         self.create_cashflow_tab()  # ← Вкладка "Денежный поток"
+        self.create_achievements_tab()  # ← Вкладка "Достижения"
+        self.create_fundamentals_tab()  # ← Вкладка "Мультипликаторы"
 
         # Статусная строка
         self.status_bar = tk.Frame(self.root, bg=COLORS['bg_header'], height=25)
@@ -684,7 +1000,8 @@ class InvestmentApp:
                         rowheight=28,
                         font=("Calibri", 9),
                         borderwidth=0,
-                        relief='flat')
+                        relief='flat',
+                        show='tree headings')
         style.configure("Treeview.Heading",
                         background=COLORS['table_header'],
                         foreground=COLORS['text'],
@@ -718,6 +1035,8 @@ class InvestmentApp:
         self.total_value_with_deposits_var = tk.StringVar(value="0 ₽")  # ← НОВАЯ
         self.total_profit_var = tk.StringVar(value="0 ₽")
         self.total_profit_pct_var = tk.StringVar(value="0%")
+        self.fair_value_var = tk.StringVar(value="0 ₽")
+        self.xirr_var = tk.StringVar(value="0%")
 
         cards = [
             ("Всего пополнено", self.total_deposits_var, COLORS['info']),
@@ -725,11 +1044,14 @@ class InvestmentApp:
             ("Текущая стоимость", self.total_value_with_deposits_var, COLORS['accent']),  # ← НОВАЯ
             ("Общая прибыль", self.total_profit_var, COLORS['warning']),
             ("Доходность", self.total_profit_pct_var, COLORS['info']),
+            ("Справедливая оценка", self.fair_value_var, '#ce93d8'),
+            ("Среднегодовая (XIRR)", self.xirr_var, '#b39ddb'),
         ]
 
         for title, var, color in cards:
-            card = tk.Frame(cards_frame, bg=color, relief=tk.FLAT, padx=5, pady=3)
+            card = tk.Frame(cards_frame, bg=color, relief=tk.FLAT, padx=5, pady=3, width=160, height=55)
             card.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=5)
+            card.pack_propagate(False)
 
             tk.Label(card, text=title, font=("Calibri", 9),
                      bg=color, fg="white").pack()
@@ -739,7 +1061,7 @@ class InvestmentApp:
         # Таблица
         columns = ('name', 'ticker', 'type', 'quantity', 'avg_price', 'current_price',
                    'total_cost', 'current_value', 'profit', 'profit_pct', 'share', 'target_share', 'deviation',
-                   'to_buy')
+                   'to_buy', 'fair_price', 'upside', 'fair_value')
         self.summary_tree = ttk.Treeview(bg_frame, columns=columns, show='headings', height=8)
 
         headings = {
@@ -747,7 +1069,8 @@ class InvestmentApp:
             'avg_price': 'Ср.цена', 'current_price': 'Текущая',
             'total_cost': 'Затраты', 'current_value': 'Стоимость',
             'profit': 'Прибыль', 'profit_pct': 'Доходность',
-            'share': 'Доля', 'target_share': 'Цель', 'deviation': 'Отклонение', 'to_buy': 'Докупить'
+            'share': 'Доля', 'target_share': 'Цель', 'deviation': 'Отклонение', 'to_buy': 'Докупить',
+            'fair_price': 'Справед. цена', 'upside': 'Потенциал', 'fair_value': 'Справед. стоимость'
         }
 
         for col, title in headings.items():
@@ -795,7 +1118,7 @@ class InvestmentApp:
 
         columns = ('name', 'ticker', 'quantity', 'avg_price', 'current_price', 'total_cost',
                    'current_value', 'profit', 'profit_pct', 'profit_with_div', 'profit_pct_with_div',
-                   'share', 'target_share', 'deviation', 'to_buy')
+                   'share', 'target_share', 'deviation', 'to_buy', 'fair_price', 'upside', 'fair_value')
         self.stocks_tree = ttk.Treeview(bg_frame, columns=columns, show='headings', height=15)
 
         headings = {
@@ -804,7 +1127,8 @@ class InvestmentApp:
             'current_value': 'Стоимость', 'profit': 'Прибыль',
             'profit_pct': 'Доходность', 'profit_with_div': 'Прибыль с див.',
             'profit_pct_with_div': 'Доходность с див.', 'share': 'Доля',
-            'target_share': 'Цель', 'deviation': 'Отклонение', 'to_buy': 'Докупить'
+            'target_share': 'Цель', 'deviation': 'Отклонение', 'to_buy': 'Докупить',
+            'fair_price': 'Справед. цена', 'upside': 'Потенциал', 'fair_value': 'Справед. стоимость'
         }
 
         for col, title in headings.items():
@@ -1085,7 +1409,7 @@ class InvestmentApp:
         bg_frame = tk.Frame(frame, bg=COLORS['bg_main'])
         bg_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Панель управления - делаем компактнее
+        # Панель управления
         control_frame = tk.Frame(bg_frame, bg=COLORS['bg_header'])
         control_frame.pack(fill=tk.X, padx=0, pady=0)
 
@@ -1101,9 +1425,30 @@ class InvestmentApp:
         self.build_btn = StyledButton(control_frame, "Построить график", self.plot_portfolio_history, width=18)
         self.build_btn.pack(side=tk.LEFT, padx=10)
 
-        # ← КНОПКА ДЛЯ ОБНОВЛЕНИЯ КЭША
         self.cache_btn = StyledButton(control_frame, "🔄 Обновить кэш", self.init_cache, width=18)
         self.cache_btn.pack(side=tk.LEFT, padx=10)
+
+        # ← ПРОГРЕСС-БАР СПРАВА
+        progress_container = tk.Frame(control_frame, bg=COLORS['bg_header'])
+        progress_container.pack(side=tk.LEFT, padx=(20, 0), fill=tk.X, expand=True)
+
+        self.progress_bar = ttk.Progressbar(
+            progress_container,
+            mode='determinate',
+            length=200,
+            maximum=100,
+            style="green.Horizontal.TProgressbar"
+        )
+        self.progress_bar.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.progress_label = tk.Label(
+            progress_container,
+            text="",
+            font=("Calibri", 8),
+            bg=COLORS['bg_header'],
+            fg=COLORS['text_secondary']
+        )
+        self.progress_label.pack(side=tk.LEFT)
 
         # Контейнер для графика
         graph_frame = tk.Frame(bg_frame, bg=COLORS['bg_main'])
@@ -1124,18 +1469,462 @@ class InvestmentApp:
         self.history_canvas = FigureCanvasTkAgg(self.history_figure, graph_frame)
         self.history_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    def init_cache(self):
-        '''Инициализация кэша исторических цен'''
-        from history_cache import init_historical_cache
+    def create_fundamentals_tab(self):
+        """Вкладка с фундаментальными показателями"""
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="📊 Мультипликаторы")
 
-        self.status_label.config(text="Инициализация кэша исторических цен...")
+        bg_frame = tk.Frame(frame, bg=COLORS['bg_main'])
+        bg_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Панель с кнопкой и прогресс-баром
+        control_frame = tk.Frame(bg_frame, bg=COLORS['bg_header'])
+        control_frame.pack(fill=tk.X, padx=20, pady=(10, 5))
+
+        StyledButton(control_frame, "🔄 Обновить данные",
+                     lambda: self.update_fundamentals(), width=20).pack(side=tk.LEFT)
+
+        tk.Label(control_frame, text="Данные со Smart-lab.ru", font=("Calibri", 8),
+                 bg=COLORS['bg_header'], fg=COLORS['text_secondary']).pack(side=tk.RIGHT)
+
+        # Прогресс-бар
+        progress_container = tk.Frame(control_frame, bg=COLORS['bg_header'])
+        progress_container.pack(side=tk.LEFT, padx=(20, 0), fill=tk.X, expand=True)
+
+        self.fund_progress_bar = ttk.Progressbar(
+            progress_container, mode='determinate', length=200, maximum=100,
+            style="green.Horizontal.TProgressbar"
+        )
+        self.fund_progress_bar.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.fund_progress_label = tk.Label(
+            progress_container, text="", font=("Calibri", 8),
+            bg=COLORS['bg_header'], fg=COLORS['text_secondary']
+        )
+        self.fund_progress_label.pack(side=tk.LEFT)
+
+        # Таблица 1: Обычные компании
+        columns1 = ('ticker', 'name', 'pe', 'pb', 'ps', 'evebitda', 'ev_s',
+                    'debt_ebitda', 'net_debt_ebitda', 'roe', 'net_margin',
+                    'ebitda_margin', 'market_cap', 'report')
+        self.fund_tree1 = ttk.Treeview(bg_frame, columns=columns1, show='headings', height=17)
+
+        headers1 = {
+            'ticker': 'Тикер', 'name': 'Название',
+            'pe': 'P/E', 'pb': 'P/B', 'ps': 'P/S',
+            'evebitda': 'EV/EBITDA', 'ev_s': 'EV/S',
+            'debt_ebitda': 'Долг/EBITDA', 'net_debt_ebitda': 'Чист.долг/EBITDA',
+            'roe': 'ROE %', 'net_margin': 'Чистая маржа %',
+            'ebitda_margin': 'EBITDA маржа %', 'market_cap': 'Капит., млрд',
+            'report': 'Отчет'
+        }
+
+        for col, title in headers1.items():
+            self.fund_tree1.heading(col, text=title)
+            self.fund_tree1.column(col, width=85, anchor='center')
+        self.fund_tree1.column('name', width=130)
+        self.fund_tree1.column('report', width=85)
+
+        self.fund_tree1.pack(fill=tk.BOTH, expand=True, padx=20, pady=(5, 5))
+
+        # Таблица 2: Банки
+        columns2 = ('ticker', 'name', 'pe', 'pb', 'roe', 'roa', 'net_margin', 'market_cap', 'report')
+        self.fund_tree2 = ttk.Treeview(bg_frame, columns=columns2, show='headings', height=2)
+
+        headers2 = {
+            'ticker': 'Тикер', 'name': 'Название',
+            'pe': 'P/E', 'pb': 'P/B', 'roe': 'ROE %', 'roa': 'ROA %',
+            'net_margin': 'Чистая маржа %', 'market_cap': 'Капит., млрд',
+            'report': 'Отчет'
+        }
+
+        for col, title in headers2.items():
+            self.fund_tree2.heading(col, text=title)
+            self.fund_tree2.column(col, width=85, anchor='center')
+        self.fund_tree2.column('name', width=130)
+        self.fund_tree2.column('report', width=85)
+
+        self.fund_tree2.pack(fill=tk.BOTH, expand=True, padx=20, pady=(5, 20))
+
+        # Загружаем данные
+        self.load_fundamentals_data()
+
+        def on_double_click(event, tree=self.fund_tree1):
+            item = tree.selection()
+            if item:
+                values = tree.item(item[0], 'values')
+                ticker = values[0]
+                self.show_fundamental_detail(ticker)
+
+        self.fund_tree1.bind('<Double-1>', on_double_click)
+        self.fund_tree2.bind('<Double-1>', lambda e: on_double_click(e, self.fund_tree2))
+        self.configure_tree_style(self.fund_tree1)
+        self.configure_tree_style(self.fund_tree2)
+
+    def show_fundamental_detail(self, ticker):
+        """Показывает модальное окно с историей мультипликаторов по годам"""
+        from DB.db_config import create_connection
+        from config import TICKER_NAMES
+        import json
+
+        conn = create_connection()
+        cursor = conn.cursor()
+        cursor.execute("USE investment_portfolio")
+        cursor.execute("SELECT msfo_history FROM stock_fundamentals WHERE ticker = %s", (ticker,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row or not row[0]:
+            messagebox.showinfo("Нет данных", f"Нет исторических данных МСФО для {ticker}")
+            return
+
+        name = TICKER_NAMES.get(ticker, ticker)
+
+        try:
+            data = json.loads(row[0])
+        except:
+            messagebox.showerror("Ошибка", "Не удалось загрузить данные МСФО")
+            return
+
+        years = data.get('years', [])
+        indicators = data.get('indicators', {})
+
+        if not years or not indicators:
+            messagebox.showinfo("Нет данных", "Пустые данные МСФО")
+            return
+
+        full_years = [y for y in years if 'LTM' not in y.upper() and '?' not in y]
+        ltm_years = [y for y in years if 'LTM' in y.upper() or '?' in y]
+        display_years = full_years + ltm_years
+
+        skip_fields = [
+            'IR рейтинг', 'Качество фин.отчетности', 'Презентации для инвесторов',
+            'Присутствие на смартлабе', 'Годовой отчет', 'Сайт для инвесторов',
+            'Календарь инвесторов', 'Обратная связь',
+        ]
+
+        tooltips = {
+            'P/E': 'Цена/Прибыль — за сколько лет окупится акция (чем ниже, тем дешевле)',
+            'P/B': 'Цена/Балансовая стоимость — оценка относительно активов',
+            'P/S': 'Цена/Выручка — сколько платишь за 1₽ выручки',
+            'EV/EBITDA': 'Стоимость компании / Прибыль до вычетов',
+            'ROE': 'Рентабельность капитала — прибыль на 1₽ собственных средств (чем выше, тем лучше)',
+            'ROA': 'Рентабельность активов — эффективность использования имущества',
+            'ROIC': 'Рентабельность инвестированного капитала',
+            'ROCE': 'Рентабельность задействованного капитала',
+            'Чистая прибыль,млрд руб': 'Прибыль после всех расходов, налогов и процентов',
+            'Выручка,млрд руб': 'Общая сумма денег от продаж за отчётный период',
+            'EBITDA,млрд руб': 'Прибыль до вычета процентов, налогов и амортизации',
+            'Чистая маржа': 'Сколько копеек чистой прибыли с 1₽ выручки',
+            'Операционная маржа': 'Прибыль от основной деятельности в % от выручки',
+            'EBITDA маржа': 'Операционная прибыль в % от выручки',
+            'D/E': 'Долг/Собственный капитал — уровень закредитованности',
+            'Долг/EBITDA': 'За сколько лет компания расплатится с долгами',
+            'Чистый долг/EBITDA': 'Долг минус деньги, делённый на EBITDA',
+            'P/FCF': 'Цена/Свободный денежный поток',
+            'P/CF': 'Цена/Денежный поток',
+            'Капитализация,млрд руб': 'Рыночная стоимость компании',
+            'EV,млрд руб': 'Стоимость компании с учётом долга',
+            'EPS,руб': 'Прибыль на акцию',
+            'FCF,млрд руб': 'Свободный денежный поток',
+            'EBIT,млрд руб': 'Прибыль до вычета процентов и налогов',
+        }
+
+        # Показатели где "чем выше, тем лучше"
+        higher_better = ['ROE', 'ROA', 'ROIC', 'ROCE', 'Чистая прибыль,млрд руб',
+                         'Выручка,млрд руб', 'EBITDA,млрд руб', 'EBIT,млрд руб',
+                         'FCF,млрд руб', 'EPS,руб', 'Чистая маржа', 'Операционная маржа',
+                         'EBITDA маржа', 'Капитализация,млрд руб', 'EV,млрд руб',
+                         'Див доход, ао,%']
+
+        win = tk.Toplevel(self.root)
+        win.title(f"{name} ({ticker}) — МСФО по годам")
+        win.geometry("870x650")
+        win.transient(self.root)
+        win.grab_set()
+        win.configure(bg=COLORS['bg_main'])
+
+        tk.Label(win, text=f"{name} ({ticker})", font=("Calibri", 14, "bold"),
+                 bg=COLORS['bg_main'], fg=COLORS['accent']).pack(pady=(15, 5))
+
+        tree_frame = tk.Frame(win, bg=COLORS['bg_main'])
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(5, 15))
+
+        columns = ('indicator',) + tuple(display_years) + ('avg',)
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=25)
+
+        tree.heading('indicator', text='Показатель')
+        tree.column('indicator', width=200, anchor='w')
+
+        for year in display_years:
+            tree.heading(year, text=year)
+            tree.column(year, width=85, anchor='center')
+
+        tree.heading('avg', text='Среднее')
+        tree.column('avg', width=90, anchor='center')
+
+        tree.pack(fill=tk.BOTH, expand=True)
+
+        def on_double_click(event):
+            region = tree.identify_region(event.x, event.y)
+            if region == 'cell':
+                column = tree.identify_column(event.x)
+                item = tree.identify_row(event.y)
+                if column == '#1' and item:
+                    values = tree.item(item, 'values')
+                    indicator_name = values[0]
+                    # Берём данные КОНКРЕТНОГО показателя из indicators
+                    if indicator_name in indicators:
+                        self.show_multiplier_chart(ticker, name, indicator_name, full_years, ltm_years,
+                                                   indicators[indicator_name], higher_better)
+
+        tree.bind('<Double-1>', on_double_click)
+
+        tree.tag_configure('evenrow', background=COLORS['table_even'])
+        tree.tag_configure('oddrow', background=COLORS['table_odd'])
+
+        for indicator_name, year_values in indicators.items():
+            if indicator_name in skip_fields:
+                continue
+
+            values = [indicator_name]
+            numeric_full_years = []
+
+            for year in full_years:
+                val = year_values.get(year)
+                if val is not None:
+                    numeric_full_years.append(val)
+                    if abs(val) >= 1000:
+                        values.append(f"{val:,.0f}")
+                    elif abs(val) >= 100:
+                        values.append(f"{val:.1f}")
+                    elif abs(val) >= 1:
+                        values.append(f"{val:.2f}")
+                    else:
+                        values.append(f"{val:.4f}")
+                else:
+                    values.append("-")
+
+            for year in ltm_years:
+                val = year_values.get(year)
+                if val is not None:
+                    if abs(val) >= 1000:
+                        values.append(f"{val:,.0f}")
+                    elif abs(val) >= 100:
+                        values.append(f"{val:.1f}")
+                    elif abs(val) >= 1:
+                        values.append(f"{val:.2f}")
+                    else:
+                        values.append(f"{val:.4f}")
+                else:
+                    values.append("-")
+
+            # Среднее
+            if numeric_full_years:
+                avg_val = sum(numeric_full_years) / len(numeric_full_years)
+
+                ltm_val = year_values.get(ltm_years[0]) if ltm_years else None
+
+                if ltm_val is not None and avg_val != 0:
+                    if indicator_name in higher_better:
+                        is_good = ltm_val > avg_val
+                    else:
+                        is_good = ltm_val < avg_val
+                else:
+                    is_good = None
+
+                # Форматируем значение
+                if abs(avg_val) >= 1000:
+                    val_str = f"{avg_val:,.0f}"
+                elif abs(avg_val) >= 100:
+                    val_str = f"{avg_val:.1f}"
+                elif abs(avg_val) >= 1:
+                    val_str = f"{avg_val:.2f}"
+                else:
+                    val_str = f"{avg_val:.4f}"
+
+                # Добавляем индикатор
+                if is_good is True:
+                    values.append(f"▲ {val_str}")  # зелёный треугольник вверх
+                elif is_good is False:
+                    values.append(f"▼ {val_str}")  # красный треугольник вниз
+                else:
+                    values.append(f"● {val_str}")  # серый круг
+            else:
+                values.append("—")
+
+            tree.insert('', tk.END, values=values)
+
+        # Чередование цветов строк
+        for i, item in enumerate(tree.get_children()):
+            tag = 'evenrow' if i % 2 == 0 else 'oddrow'
+            tree.item(item, tags=(tag,))
+
+        # Обработчик двойного клика по показателю
+
+
+        # Подсказки при наведении
+        def on_motion(event):
+            region = tree.identify_region(event.x, event.y)
+            if region == 'cell':
+                column = tree.identify_column(event.x)
+                item = tree.identify_row(event.y)
+                if column == '#1':
+                    values = tree.item(item, 'values')
+                    indicator = values[0]
+                    tip = tooltips.get(indicator, '')
+                    if tip:
+                        show_tooltip_window(tree, tip, event.x_root, event.y_root)
+                else:
+                    hide_tooltip()
+            else:
+                hide_tooltip()
+
+        tree.bind('<Motion>', on_motion)
+        tree.bind('<Leave>', lambda e: hide_tooltip())
+
+        tk.Button(win, text="Закрыть", command=win.destroy,
+                  bg=COLORS['bg_header'], fg=COLORS['text'], font=("Calibri", 10),
+                  relief="flat", padx=25, pady=8, cursor="hand2").pack(pady=(0, 15))
+
+    def show_tooltip_text(widget, text):
+        """Показывает всплывающую подсказку"""
+        global _tooltip_window
+        hide_tooltip()
+        x = widget.winfo_rootx() + widget.winfo_width() + 10
+        y = widget.winfo_rooty()
+        _tooltip_window = tk.Toplevel(widget)
+        _tooltip_window.wm_overrideredirect(True)
+        _tooltip_window.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(_tooltip_window, text=text, background="#ffffcc",
+                         relief="solid", borderwidth=1, font=("Calibri", 9),
+                         wraplength=250, padx=5, pady=3)
+        label.pack()
+
+    def load_fundamentals_data(self):
+        """Загружает фундаментальные данные в две таблицы"""
+        for tree in [self.fund_tree1, self.fund_tree2]:
+            for item in tree.get_children():
+                tree.delete(item)
+
+        from DB.db_config import create_connection
+        conn = create_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("USE investment_portfolio")
+            cursor.execute("SELECT * FROM stock_fundamentals ORDER BY ticker")
+            rows = cursor.fetchall()
+
+            from config import STOCKS, TICKER_NAMES
+            ticker_order = {t: i for i, t in enumerate(STOCKS)}
+            rows.sort(key=lambda r: ticker_order.get(r[0], 999))
+
+            count1 = 0  # Счётчик для обычных компаний
+            count2 = 0  # Счётчик для банков
+
+            for row in rows:
+                ticker = row[0]
+                name = TICKER_NAMES.get(ticker, ticker)
+                company_type = row[32] if len(row) > 32 and row[32] else 'industrial'
+
+                if company_type == 'bank':
+                    tag = 'evenrow' if count2 % 2 == 0 else 'oddrow'
+                    count2 += 1
+                    self.fund_tree2.insert('', tk.END, values=(
+                        ticker, name,
+                        f"{float(row[11]):.1f}" if row[11] else '-',
+                        f"{float(row[12]):.2f}" if row[12] else '-',
+                        f"{float(row[24]):.1f}%" if row[24] else '-',
+                        f"{float(row[25]):.1f}%" if row[25] else '-',
+                        f"{float(row[28]):.1f}%" if row[28] else '-',
+                        f"{float(row[1]):,.0f}" if row[1] else '-',
+                        row[31] if len(row) > 31 and row[31] else '-',
+                    ), tags=(tag,))
+                else:
+                    tag = 'evenrow' if count1 % 2 == 0 else 'oddrow'
+                    count1 += 1
+                    self.fund_tree1.insert('', tk.END, values=(
+                        ticker, name,
+                        f"{float(row[11]):.1f}" if row[11] else '-',
+                        f"{float(row[12]):.2f}" if row[12] else '-',
+                        f"{float(row[13]):.2f}" if row[13] else '-',
+                        f"{float(row[17]):.1f}" if row[17] else '-',
+                        f"{float(row[16]):.2f}" if row[16] else '-',
+                        f"{float(row[20]):.2f}" if row[20] else '-',
+                        f"{float(row[21]):.2f}" if row[21] else '-',
+                        f"{float(row[24]):.1f}%" if row[24] else '-',
+                        f"{float(row[28]):.1f}%" if row[28] else '-',
+                        f"{float(row[30]):.1f}%" if row[30] else '-',
+                        f"{float(row[1]):,.0f}" if row[1] else '-',
+                        row[31] if len(row) > 31 and row[31] else '-',
+                    ), tags=(tag,))
+            conn.close()
+
+    def update_fundamentals(self):
+        """Обновляет фундаментальные показатели со Smart-lab"""
+
+        self.fund_progress_bar['value'] = 0
+        self.fund_progress_label.config(text="0%")
+        self.status_label.config(text="Загрузка данных со Smart-lab...")
+        self.root.update()
+
+        def run():
+            from fair_price import get_all_msfo_data
+
+            # Обновляем прогресс
+            total = len(self.stocks)
+            self.root.after(0, lambda: self.fund_progress_label.config(text=f"0/{total}"))
+
+            # Загружаем МСФО данные
+            get_all_msfo_data(self.stocks)
+
+            # Обновляем интерфейс
+            self.root.after(0, lambda: self.fund_progress_bar.configure(value=100))
+            self.root.after(0, lambda: self.fund_progress_label.config(text=f"{total}/{total}"))
+            self.root.after(0, lambda: self.status_label.config(text="Мультипликаторы обновлены!"))
+            self.root.after(0, lambda: self.load_fundamentals_data())
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def init_cache(self):
+        """Инициализация кэша исторических цен"""
+        from history_cache import STOCKS, BONDS, INDEX_TICKER, ensure_prices_cached, ensure_index_cached
+        from datetime import datetime
+
+        all_tickers = STOCKS + BONDS + [INDEX_TICKER]
+        total = len(all_tickers)
+
+        self.progress_bar['value'] = 0
+        self.progress_bar['maximum'] = total
+        self.progress_label.config(text=f"0/{total}")
+        self.status_label.config(text="Инициализация кэша...")
         self.root.update()
 
         def run_init():
-            init_historical_cache()
+            start = datetime(2023, 6, 30).date()
+            end = datetime.now().date()
+
+            for i, ticker in enumerate(all_tickers, 1):
+                if ticker == INDEX_TICKER:
+                    ensure_index_cached(ticker, start, end, force_refresh=True)
+                else:
+                    security_type = 'stock' if ticker in STOCKS else 'bond'
+                    ensure_prices_cached(ticker, security_type, start, end, force_refresh=True)
+
+                # Обновляем прогресс
+                progress = int(i / total * 100)
+                self.root.after(0, lambda v=progress, c=i: self._update_progress(v, c, total))
+
+            self.root.after(0, lambda: self.progress_label.config(text="Готово"))
             self.root.after(0, lambda: self.status_label.config(text="Кэш исторических цен обновлен!"))
 
         threading.Thread(target=run_init, daemon=True).start()
+
+    def _update_progress(self, value, current, total):
+        """Обновляет прогресс-бар"""
+        self.progress_bar['value'] = current
+        self.progress_label.config(text=f"{current}/{total}")
+        self.root.update_idletasks()
 
     def plot_portfolio_history(self):
         '''Построение графика исторической стоимости портфеля и индекса'''
@@ -1165,6 +1954,9 @@ class InvestmentApp:
 
         def load_and_plot():
             # 1. История портфеля
+            self.root.after(0, lambda: self.progress_bar.start())
+            self.root.after(0, lambda: self.progress_label.config(text="Загрузка данных..."))
+
             history_df = get_portfolio_history(start_date, end_date)
             if history_df is None or history_df.empty:
                 self.root.after(0, lambda: self._update_history_plot(None, None))
@@ -1289,6 +2081,8 @@ class InvestmentApp:
             else:
                 merged['re_value'] = merged['value']
 
+            self.root.after(0, lambda: self.progress_bar.stop())
+            self.root.after(0, lambda: self.progress_label.config(text="Готово"))
             self.root.after(0, lambda: self._update_history_plot(history_df, merged))
         threading.Thread(target=load_and_plot, daemon=True).start()
 
@@ -1616,7 +2410,6 @@ class InvestmentApp:
                 all_positions.append(('bond', ticker, pos, current_price_rub, current_value, current_price_percent))
 
         def get_position_order(item):
-            '''Сортировка строк в таблицах в соответствии с конфиг файлом'''
             sec_type = item[0]
             ticker = item[1]
             if sec_type == 'stock':
@@ -1663,7 +2456,7 @@ class InvestmentApp:
 
         # Заполнение таблиц
         for i, item in enumerate(all_positions):
-            if len(item) == 5:
+            if len(item) == 5:  # акция
                 sec_type, ticker, pos, current_price, current_value = item
                 avg_price = pos['total_cost'] / pos['qty'] if pos['qty'] > 0 else 0
                 position_profit = current_value - pos['total_cost']
@@ -1673,14 +2466,12 @@ class InvestmentApp:
                 target_share = TARGET_SHARES.get(ticker, 0)
                 deviation = share - target_share
 
-                # Расчет количества для докупки
                 to_buy = 0
                 if deviation < 0 and current_price > 0:
                     target_value = total_portfolio_value * target_share / 100
                     needed_value = target_value - current_value
                     to_buy = int(needed_value / current_price)
 
-                # Расчет дивидендов
                 from DB.db_config import create_connection
                 conn = create_connection()
                 cursor = conn.cursor()
@@ -1694,7 +2485,17 @@ class InvestmentApp:
 
                 type_name = "Акция"
 
-                # Данные для таблицы акций
+                # Справедливая цена
+                fair_data = self.fair_prices.get(ticker) if hasattr(self, 'fair_prices') else None
+                if fair_data:
+                    fair_price = fair_data.get('fair_price')
+                    upside = fair_data.get('upside')
+                    fair_value = fair_price * pos['qty'] if fair_price else None
+                else:
+                    fair_price = None
+                    upside = None
+                    fair_value = None
+
                 row_data = [
                     TICKER_NAMES.get(ticker, ticker),
                     ticker,
@@ -1710,35 +2511,37 @@ class InvestmentApp:
                     f"{share:.2f}%",
                     f"{target_share:.2f}%",
                     f"{deviation:+.2f}%" if deviation != 0 else "0%",
-                    str(to_buy) if to_buy > 0 else "-"
+                    str(to_buy) if to_buy > 0 else "-",
+                    f"{fair_price:.2f}" if fair_price else "-",
+                    f"{upside:+.1f}%" if upside else "-",
+                    f"{fair_value:,.0f}" if fair_value else "-",
                 ]
 
-                # Данные для сводной таблицы по акциям
                 summary_values = [
-                    TICKER_NAMES.get(ticker, ticker),  # название
-                    ticker,  # тикер
-                    type_name,  # тип
-                    f"{pos['qty']:.0f}",  # количество
-                    f"{avg_price:.2f}",  # средняя цена
-                    f"{current_price:.2f}",  # текущая цена
-                    f"{pos['total_cost']:,.2f}",  # затраты
-                    f"{current_value:,.2f}",  # стоимость
-                    f"{position_profit:,.2f}",  # прибыль
-                    f"{profit_pct_pos:.2f}%",  # доходность
-                    f"{share:.2f}%",  # доля
-                    f"{target_share:.2f}%",  # цель
-                    f"{deviation:+.2f}%" if deviation != 0 else "0%",  # отклонение
-                    str(to_buy) if to_buy > 0 else "-"  # докупить
+                    TICKER_NAMES.get(ticker, ticker),
+                    ticker,
+                    type_name,
+                    f"{pos['qty']:.0f}",
+                    f"{avg_price:.2f}",
+                    f"{current_price:.2f}",
+                    f"{pos['total_cost']:,.2f}",
+                    f"{current_value:,.2f}",
+                    f"{position_profit:,.2f}",
+                    f"{profit_pct_pos:.2f}%",
+                    f"{share:.2f}%",
+                    f"{target_share:.2f}%",
+                    f"{deviation:+.2f}%" if deviation != 0 else "0%",
+                    str(to_buy) if to_buy > 0 else "-",
+                    f"{fair_price:.2f}" if fair_price else "-",
+                    f"{upside:+.1f}%" if upside else "-",
+                    f"{fair_value:,.0f}" if fair_value else "-",
                 ]
 
                 row_tag = 'evenrow' if i % 2 == 0 else 'oddrow'
-
                 self.summary_tree.insert('', tk.END, values=summary_values, tags=(row_tag,))
                 self.stocks_tree.insert('', tk.END, values=row_data, tags=(row_tag,))
 
-
-
-            else:
+            else:  # облигация
                 sec_type, ticker, pos, current_price_rub, current_value, current_price_percent = item
                 avg_price_rub = pos['total_cost'] / pos['qty'] if pos['qty'] > 0 else 0
                 avg_price_percent = (avg_price_rub / 1000 * 100) if avg_price_rub > 0 else 0
@@ -1748,7 +2551,6 @@ class InvestmentApp:
                 target_share = TARGET_SHARES.get(ticker, 0)
                 deviation = share - target_share
 
-                # Расчет количества для докупки
                 to_buy = 0
                 if deviation < 0 and current_price_rub > 0:
                     target_value = total_portfolio_value * target_share / 100
@@ -1766,7 +2568,6 @@ class InvestmentApp:
                 profit_pct_with_coupon = (profit_with_coupon / pos['total_cost'] * 100) if pos['total_cost'] > 0 else 0
                 type_name = "Облигация"
 
-                # Данные для таблицы облигаций
                 row_data = [
                     TICKER_NAMES.get(ticker, ticker),
                     ticker,
@@ -1784,10 +2585,10 @@ class InvestmentApp:
                     f"{share:.2f}%",
                     f"{target_share:.2f}%",
                     f"{deviation:+.2f}%" if deviation != 0 else "0%",
-                    str(to_buy) if to_buy > 0 else "-"
+                    str(to_buy) if to_buy > 0 else "-",
+                    "-", "-", "-",  # для облигаций нет справедливой цены
                 ]
 
-                # Для сводной таблицы по облигациям
                 summary_values = [
                     TICKER_NAMES.get(ticker, ticker),
                     ticker,
@@ -1802,13 +2603,46 @@ class InvestmentApp:
                     f"{share:.2f}%",
                     f"{target_share:.2f}%",
                     f"{deviation:+.2f}%" if deviation != 0 else "0%",
-                    str(to_buy) if to_buy > 0 else "-"
+                    str(to_buy) if to_buy > 0 else "-",
+                    "-", "-", "-",
                 ]
 
                 row_tag = 'evenrow' if i % 2 == 0 else 'oddrow'
                 self.summary_tree.insert('', tk.END, values=summary_values, tags=(row_tag,))
                 self.bonds_tree.insert('', tk.END, values=row_data, tags=(row_tag,))
+
+        # Справедливая стоимость всего портфеля
+        if hasattr(self, 'fair_prices'):
+            total_fair_stocks = sum(
+                (self.fair_prices.get(ticker, {}).get('fair_price', 0) or 0) * pos['qty']
+                for ticker, pos in stats['stock_positions'].items()
+                if pos['qty'] > 0
+            )
+            total_fair_bonds = sum(pos['total_cost'] for pos in stats['bond_positions'].values())
+            total_fair_value = total_fair_stocks + total_fair_bonds + total_in_deposits_accounts
+            self.fair_value_var.set(f"{total_fair_value:,.2f} ₽")
+
         self.update_bottom_stats(stats, total_portfolio_value, total_purchases, all_positions)
+
+        # Расчет XIRR
+        from DB.db_config import create_connection
+        conn = create_connection()
+        cursor = conn.cursor()
+        cursor.execute("USE investment_portfolio")
+        cursor.execute("SELECT date, amount FROM deposits WHERE user_id = %s ORDER BY date", (self.user_id,))
+        deposits = cursor.fetchall()
+        conn.close()
+
+        if deposits:
+            current_value = total_portfolio_value
+            cashflows = [-float(d[1]) for d in deposits]
+            dates = [d[0] for d in deposits]
+            cashflows.append(current_value)
+            dates.append(datetime.now().date())
+            xirr = calculate_xirr(cashflows, dates)
+            self.xirr_var.set(f"{xirr:.2f}%")
+        else:
+            self.xirr_var.set("0%")
 
     def start_auto_update(self):
         '''Автоматическое обновление цен раз в минуту'''
